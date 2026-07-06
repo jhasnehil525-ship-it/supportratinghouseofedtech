@@ -750,8 +750,8 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
 
       <!-- KPI criteria editor -->
       <div class="asec" id="kpi-manage-sec" style="margin-bottom:20px;">
-        <h3>Manage KPI Criteria</h3>
-        <p>Edit each criterion's name, target and unit — or add and remove criteria. Changes apply to <strong>every team and everyone</strong>, and to all rating forms. Existing recorded values stay linked to their criterion. “Good when” controls when a value shows ✓ Met vs ✗ Below.</p>
+        <h3 id="kpi-manage-title">Manage KPI Criteria</h3>
+        <p>Edit each criterion's name, target and unit — or add and remove criteria. Changes apply to <strong>this team only</strong> — the other team keeps its own separate KPI list. Existing recorded values stay linked to their criterion. “Good when” controls when a value shows ✓ Met vs ✗ Below.</p>
         <div style="overflow-x:auto;">
           <table class="atable" id="kpi-edit-table" style="min-width:820px;">
             <thead><tr><th style="min-width:150px;">Name</th><th style="min-width:190px;">Description</th><th style="min-width:120px;">Target (text)</th><th style="width:70px;">Unit</th><th style="width:90px;">Target #</th><th style="width:120px;">Good when</th><th style="width:40px;"></th></tr></thead>
@@ -1234,11 +1234,18 @@ var curComments = {};
 
 // Built-in defaults kept for the "reset" button.
 var BUILTIN_KPI_DEFS = JSON.parse(JSON.stringify(KPI_DEFS));
-// KPI criteria are manager-editable and stored in the DB (shared by everyone & every team).
+// KPI criteria are manager-editable and stored PER TEAM in the DB, so each team
+// keeps its own list — editing one team's KPIs never affects the other.
+function kpiKey() { return 'kpi_defs_' + (curTeam || 'support'); }
 function loadKPIDefs() {
-  var saved = lsGet('kpi_defs');
-  if (saved && saved.length) { KPI_DEFS = saved; }
-  else { lsSet('kpi_defs', KPI_DEFS); }
+  var saved = lsGet(kpiKey());
+  if (saved && saved.length) { KPI_DEFS = saved; return; }
+  // First time for this team: seed from an older shared list if one exists,
+  // otherwise from the built-in defaults. Each team then diverges independently.
+  var legacy = lsGet('kpi_defs');
+  var seed = (legacy && legacy.length) ? JSON.parse(JSON.stringify(legacy)) : JSON.parse(JSON.stringify(BUILTIN_KPI_DEFS));
+  KPI_DEFS = seed;
+  lsSet(kpiKey(), seed);
 }
 // Direction for the Met/Below badge. Editable KPIs carry an explicit dir; the
 // built-in ones are inferred so old data keeps its correct status.
@@ -1462,7 +1469,7 @@ function startApp() {
     showTeamSelect();                 // managers choose a team first
   } else {
     curTeam = teamOfEmployee(cu.empName);
-    EMPS = getEmps();
+    EMPS = getEmps(); loadKPIDefs();
     document.getElementById('htabs-manager').style.display='none';
     document.getElementById('htabs-viewer').style.display='flex';
     var tc0=document.getElementById('team-chip'); if(tc0) tc0.style.display='none';
@@ -1495,7 +1502,7 @@ function renderTeamCards() {
   }
 }
 function selectTeam(id) {
-  curTeam=id; EMPS=getEmps();
+  curTeam=id; EMPS=getEmps(); loadKPIDefs();
   document.getElementById('htabs-manager').style.display='flex';
   var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
   var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
@@ -2026,6 +2033,7 @@ function syncRenameAgent(oldName, newName) {
 
 // ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
 function renderKPIEditor() {
+  var ttl=document.getElementById('kpi-manage-title'); if(ttl && curTeam) ttl.textContent='Manage KPI Criteria — '+teamName();
   var tb=document.getElementById('kpi-edit-tbody'); if(!tb) return; tb.innerHTML='';
   for(var i=0;i<KPI_DEFS.length;i++) appendKPIEditRow(KPI_DEFS[i]);
 }
@@ -2068,7 +2076,7 @@ function saveKPIDefs() {
     arr.push({ key:key, name:name, desc:(tr.querySelector('.kpi-e-desc').value||'').trim(), target:(tr.querySelector('.kpi-e-target').value||'').trim(), unit:(tr.querySelector('.kpi-e-unit').value||'').trim(), targetNum:targetNum, dir:tr.querySelector('.kpi-e-dir').value });
   }
   if(!arr.length){ showToast('Add at least one criterion before saving','error'); return; }
-  KPI_DEFS=arr; lsSet('kpi_defs', arr);
+  KPI_DEFS=arr; lsSet(kpiKey(), arr);
   showToast('KPI criteria saved ✓ ('+arr.length+')','success');
   renderKPIEditor();
 }
@@ -2076,7 +2084,7 @@ function resetKPIDefs() {
   if(cu.role!=='manager') return;
   if(!confirm('Reset all KPI criteria back to the built-in defaults? Your custom criteria list will be replaced for everyone.')) return;
   KPI_DEFS=JSON.parse(JSON.stringify(BUILTIN_KPI_DEFS));
-  lsSet('kpi_defs', KPI_DEFS);
+  lsSet(kpiKey(), KPI_DEFS);
   renderKPIEditor();
   showToast('KPI criteria reset to defaults ✓','info');
 }
