@@ -546,6 +546,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         <button class="htab" type="button" onclick="switchTab('rankings')">🏆 Rankings</button>
         <button class="htab" type="button" onclick="switchTab('toppers')">⭐ Top Performers</button>
       </div>
+      <button id="team-chip" type="button" onclick="showTeamSelect()" style="display:none;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:40px;padding:6px 14px;color:var(--text);font-size:13px;font-weight:600;cursor:pointer;"><span id="team-chip-name">Support Team</span><span style="opacity:0.55;font-size:12px;">⇄ switch</span></button>
       <div class="uchip">
         <div class="uav" id="uav">P</div>
         <div>
@@ -569,6 +570,12 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
     <!-- RATINGS -->
     <div id="ratings-sec">
 
+      <div class="page" id="pg-teams">
+        <div class="ptitle">Choose Team</div>
+        <div class="psub">Select which team you want to rate — each team has its own roster and rankings.</div>
+        <div class="mgrid" id="teamgrid" style="max-width:680px;"></div>
+      </div>
+
       <div class="page active" id="pg-months">
         <div id="vwelcome" style="display:none;align-items:center;gap:16px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:24px;"></div>
         <div class="ptitle" id="months-title">Select Month</div>
@@ -590,6 +597,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       <div class="page" id="pg-emps">
         <div class="ptitle" id="etitle">Week 1 — January 2026</div>
         <div class="psub" id="esub">Select an employee to rate</div>
+        <input type="text" id="emp-search" placeholder="🔍 Search employee by name…" oninput="initEmpGrid()" style="width:100%;max-width:440px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;outline:none;margin-bottom:18px;">
         <div class="egrid" id="egrid"></div>
       </div>
 
@@ -738,6 +746,23 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px;">
         <div style="font-family:Syne,sans-serif;font-size:11px;font-weight:700;margin-bottom:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Admin Accounts</div>
         <div style="display:flex;flex-wrap:wrap;gap:10px;" id="admin-list"></div>
+      </div>
+
+      <!-- KPI criteria editor -->
+      <div class="asec" id="kpi-manage-sec" style="margin-bottom:20px;">
+        <h3>Manage KPI Criteria</h3>
+        <p>Edit each criterion's name, target and unit — or add and remove criteria. Changes apply to <strong>every team and everyone</strong>, and to all rating forms. Existing recorded values stay linked to their criterion. “Good when” controls when a value shows ✓ Met vs ✗ Below.</p>
+        <div style="overflow-x:auto;">
+          <table class="atable" id="kpi-edit-table" style="min-width:820px;">
+            <thead><tr><th style="min-width:150px;">Name</th><th style="min-width:190px;">Description</th><th style="min-width:120px;">Target (text)</th><th style="width:70px;">Unit</th><th style="width:90px;">Target #</th><th style="width:120px;">Good when</th><th style="width:40px;"></th></tr></thead>
+            <tbody id="kpi-edit-tbody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+          <button class="abtn" type="button" onclick="addKPIRow()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;padding:11px 20px;">＋ Add Criterion</button>
+          <button class="abtn" type="button" onclick="saveKPIDefs()" style="padding:11px 22px;">Save Criteria ✓</button>
+          <button type="button" onclick="resetKPIDefs()" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;padding:10px 14px;cursor:pointer;">↺ Reset to defaults</button>
+        </div>
       </div>
 
       <!-- Bulk credential upload -->
@@ -1140,8 +1165,28 @@ function lsGet(k)   { return dbGet(k); }
 function lsSet(k,v) { dbSet(k, v); }
 function getMap()   { return lsGet('access_map') || {}; }
 function setMap(m)  { lsSet('access_map', m); }
-function getEmps()  { return lsGet('employee_list') || DEFAULT_EMPS; }
-function saveEmps(list) { lsSet('employee_list', list); }
+function teamKey()  { return 'employee_list_' + (curTeam || 'support'); }
+function teamName() { for (var i=0;i<TEAMS.length;i++) if (TEAMS[i].id===curTeam) return TEAMS[i].name; return 'Support Team'; }
+// One-time split of the existing single roster into the two team rosters.
+function ensureTeamRosters() {
+  if (lsGet('employee_list_support') || lsGet('employee_list_quality')) return;
+  var current = lsGet('employee_list') || DEFAULT_EMPS.slice();
+  var quality = [], support = [];
+  for (var i=0;i<current.length;i++) {
+    var isQ = QUALITY_SEED.some(function(q){ return normTok(q)===normTok(current[i]); });
+    (isQ?quality:support).push(current[i]);
+  }
+  QUALITY_SEED.forEach(function(q){ if(!quality.some(function(x){return normTok(x)===normTok(q);})) quality.push(q); });
+  lsSet('employee_list_support', support);
+  lsSet('employee_list_quality', quality);
+}
+function teamOfEmployee(name) {
+  ensureTeamRosters();
+  var q = lsGet('employee_list_quality') || [];
+  return q.some(function(x){ return normTok(x)===normTok(name); }) ? 'quality' : 'support';
+}
+function getEmps()  { ensureTeamRosters(); return lsGet(teamKey()) || []; }
+function saveEmps(list) { lsSet(teamKey(), list); }
 function getRating(mo,w,e) { return lsGet('r26_'+mo+'_w'+w+'_'+e); }
 function setRating(mo,w,e,d) { lsSet('r26_'+mo+'_w'+w+'_'+e, d); }
 function cntRatings(mo,w) { var c=0; for(var i=0;i<EMPS.length;i++) if(getRating(mo,w,EMPS[i])) c++; return c; }
@@ -1158,6 +1203,16 @@ var DEFAULT_EMPS = [
   'Vicky Shaw','Aman','Sakshi Jha','Harshita','Nayeemuddin','Suman Singha'
 ];
 var EMPS = DEFAULT_EMPS;
+
+// Teams — managers pick one after login; each team has its own roster & rankings.
+// Ratings still write to the SAME Google Sheets (keyed by employee name), so the
+// salary sheet stays shared exactly as before.
+var TEAMS = [
+  { id:'support', name:'Support Team' },
+  { id:'quality', name:'Quality for Support' }
+];
+// Seed used ONLY on first run to split the existing roster into the two teams.
+var QUALITY_SEED = ['Sandeepan','Asif','Sharique','Hamidul','Laboni','Amit','Sushmita','Liza'];
 
 var KPI_DEFS = [
   { key:'quality',       name:'Quality',                      desc:'How good and correct your replies are.',                 target:'90%',          unit:'%',    targetNum:90  },
@@ -1177,6 +1232,31 @@ var KPI_DEFS = [
 var curKPI = {};
 var curComments = {};
 
+// Built-in defaults kept for the "reset" button.
+var BUILTIN_KPI_DEFS = JSON.parse(JSON.stringify(KPI_DEFS));
+// KPI criteria are manager-editable and stored in the DB (shared by everyone & every team).
+function loadKPIDefs() {
+  var saved = lsGet('kpi_defs');
+  if (saved && saved.length) { KPI_DEFS = saved; }
+  else { lsSet('kpi_defs', KPI_DEFS); }
+}
+// Direction for the Met/Below badge. Editable KPIs carry an explicit dir; the
+// built-in ones are inferred so old data keeps its correct status.
+function inferDir(def) {
+  if (def && def.dir) return def.dir;
+  if (!def || def.targetNum == null) return 'none';
+  if (def.key === 'aht' || def.key === 'shrinkage') return 'lte';
+  if (def.key === 'reopen') return 'zero';
+  return 'gte';
+}
+function kpiMet(kpi, num) {
+  var dir = inferDir(kpi);
+  if (dir === 'lte') return num <= kpi.targetNum;
+  if (dir === 'zero') return num === 0;
+  if (dir === 'gte' && kpi.targetNum != null) return num >= kpi.targetNum;
+  return null;
+}
+
 var CRITERIA = [
   'Attendance / Availability',
   'Professionalism / Behavior',
@@ -1195,7 +1275,7 @@ var ADMINS = [
 ];
 var EP = atob('ZW1wbG95ZWUxMjM=');   // default fallback password "employee123"
 
-var cu = null, cMonth = null, cWeek = null, cEmp = null, viewOnly = false;
+var cu = null, cMonth = null, cWeek = null, cEmp = null, viewOnly = false, curTeam = null;
 
 // ── KPI Functions ─────────────────────────────────────────────
 function toggleKPI() {
@@ -1215,13 +1295,13 @@ function buildKPITable(savedKPI, readOnly) {
       if(val !== '') filled++;
       var inputId = 'kpi_'+kpi.key;
       var statusHtml = '';
-      if(val !== '' && kpi.targetNum !== null) {
+      if(val !== '') {
         var num = parseFloat(val);
         if(!isNaN(num)) {
-          var met = (kpi.key==='aht') ? num<=kpi.targetNum : (kpi.key==='reopen') ? num===0 : num>=kpi.targetNum;
-          statusHtml = met ? '<span class="kpi-status met">✓ Met</span>' : '<span class="kpi-status notmet">✗ Below</span>';
-        }
-      } else if(val !== '') { statusHtml = '<span class="kpi-status na">Recorded</span>'; }
+          var m = kpiMet(kpi, num);
+          statusHtml = (m===true) ? '<span class="kpi-status met">✓ Met</span>' : (m===false) ? '<span class="kpi-status notmet">✗ Below</span>' : '<span class="kpi-status na">Recorded</span>';
+        } else { statusHtml = '<span class="kpi-status na">Recorded</span>'; }
+      }
       var tr = document.createElement('tr');
       tr.innerHTML = '<td><div class="kpi-name">'+kpi.name+'</div><div class="kpi-desc">'+kpi.desc+'</div><div class="kpi-target">Target: '+kpi.target+'</div></td>'
         +'<td><div class="kpi-input-wrap">'
@@ -1242,11 +1322,13 @@ function updateKPI(key, val) {
   for(var i=0;i<KPI_DEFS.length;i++) if(KPI_DEFS[i].key===key) { kpi=KPI_DEFS[i]; break; }
   if(!kpi) return;
   var statusEl = document.getElementById('kpi-status-'+key);
-  if(statusEl && val!=='' && kpi.targetNum!==null) {
+  if(statusEl && val!=='') {
     var num = parseFloat(val);
-    var met = (kpi.key==='aht') ? num<=kpi.targetNum : (kpi.key==='reopen') ? num===0 : num>=kpi.targetNum;
-    statusEl.innerHTML = met ? '<span class="kpi-status met">✓ Met</span>' : '<span class="kpi-status notmet">✗ Below</span>';
-  } else if(statusEl) { statusEl.innerHTML = val!=='' ? '<span class="kpi-status na">Recorded</span>' : ''; }
+    if(!isNaN(num)) {
+      var m = kpiMet(kpi, num);
+      statusEl.innerHTML = (m===true) ? '<span class="kpi-status met">✓ Met</span>' : (m===false) ? '<span class="kpi-status notmet">✗ Below</span>' : '<span class="kpi-status na">Recorded</span>';
+    } else { statusEl.innerHTML = '<span class="kpi-status na">Recorded</span>'; }
+  } else if(statusEl) { statusEl.innerHTML = ''; }
   var filled=0;
   for(var i=0;i<KPI_DEFS.length;i++) if(curKPI[KPI_DEFS[i].key]!==undefined && curKPI[KPI_DEFS[i].key]!=='') filled++;
   var countEl=document.getElementById('kpi-filled-count');
@@ -1369,27 +1451,58 @@ function initGoogleSignIn() {
 }
 
 function startApp() {
-  EMPS = getEmps();
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   document.getElementById('access-sec').style.display='none';
   document.getElementById('ratings-sec').style.display='block';
   setupHeader();
+  cMonth=null; cWeek=null; cEmp=null;
   if(cu.role==='manager') {
-    document.getElementById('htabs-manager').style.display='flex';
     document.getElementById('htabs-viewer').style.display='none';
+    showTeamSelect();                 // managers choose a team first
   } else {
+    curTeam = teamOfEmployee(cu.empName);
+    EMPS = getEmps();
     document.getElementById('htabs-manager').style.display='none';
     document.getElementById('htabs-viewer').style.display='flex';
-  }
-  cMonth=null; cWeek=null; cEmp=null;
-  if(cu.role==='viewer') {
-    // Employees see the consolidated, read-only view of all their ratings.
+    var tc0=document.getElementById('team-chip'); if(tc0) tc0.style.display='none';
     renderMyRatings();
     showPage('pg-myratings');
-  } else {
-    initMonths(); showPage('pg-months'); updateBC();
   }
+}
+
+// ── Manager team picker ───────────────────────────────────────
+function showTeamSelect() {
+  document.getElementById('htabs-manager').style.display='none';
+  var tc=document.getElementById('team-chip'); if(tc) tc.style.display='none';
+  var secs=['ratings-sec','graphs-sec','rankings-sec','toppers-sec','export-sec','access-sec'];
+  for(var i=0;i<secs.length;i++){ var el=document.getElementById(secs[i]); if(el) el.style.display=(secs[i]==='ratings-sec')?'block':'none'; }
+  renderTeamCards();
+  showPage('pg-teams');
+  document.getElementById('bc').innerHTML='<span class="cur">Choose Team</span>';
+}
+function renderTeamCards() {
+  var g=document.getElementById('teamgrid'); if(!g) return; g.innerHTML='';
+  ensureTeamRosters();
+  for(var i=0;i<TEAMS.length;i++){
+    (function(t){
+      var roster=lsGet('employee_list_'+t.id)||[];
+      var d=document.createElement('div'); d.className='mbtn';
+      d.innerHTML='<div class="mn">'+t.name+'</div><div class="my">'+roster.length+' employees</div><div class="mc">Open →</div>';
+      d.onclick=function(){ selectTeam(t.id); };
+      g.appendChild(d);
+    })(TEAMS[i]);
+  }
+}
+function selectTeam(id) {
+  curTeam=id; EMPS=getEmps();
+  document.getElementById('htabs-manager').style.display='flex';
+  var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
+  var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
+  var tabs=document.querySelectorAll('#htabs-manager .htab');
+  for(var i=0;i<tabs.length;i++) tabs[i].classList.toggle('active', i===0);
+  cMonth=null; cWeek=null; cEmp=null;
+  initMonths(); showPage('pg-months'); updateBC();
 }
 
 function doLogout() {
@@ -1425,22 +1538,22 @@ function switchTab(tab) {
   if(tab==='access') {
     document.getElementById('access-sec').style.display='block';
     renderAccessTable();
-    document.getElementById('bc').innerHTML='<span class="cur">Access Management</span>';
+    document.getElementById('bc').innerHTML=bcLabel('Access Management');
   } else if(tab==='graphs') {
     document.getElementById('graphs-sec').style.display='block';
-    document.getElementById('bc').innerHTML='<span class="cur">Graphs</span>';
+    document.getElementById('bc').innerHTML=bcLabel('Graphs');
     initGraphSelects(); renderGraph(); renderTeamChart();
   } else if(tab==='rankings') {
     document.getElementById('rankings-sec').style.display='block';
-    document.getElementById('bc').innerHTML='<span class="cur">Rankings</span>';
+    document.getElementById('bc').innerHTML=bcLabel('Rankings');
     initRankMonth(); renderRankings();
   } else if(tab==='toppers') {
     document.getElementById('toppers-sec').style.display='block';
-    document.getElementById('bc').innerHTML='<span class="cur">Top Performers</span>';
+    document.getElementById('bc').innerHTML=bcLabel('Top Performers');
     renderToppers();
   } else if(tab==='export') {
     document.getElementById('export-sec').style.display='block';
-    document.getElementById('bc').innerHTML='<span class="cur">Export CSV</span>';
+    document.getElementById('bc').innerHTML=bcLabel('Export CSV');
     initExportSelects();
   } else {
     document.getElementById('ratings-sec').style.display='block';
@@ -1451,9 +1564,18 @@ function switchTab(tab) {
 }
 
 // ── Breadcrumb ────────────────────────────────────────────────
+function bcLabel(label) {
+  if(cu && cu.role==='manager' && curTeam)
+    return '<span onclick="showTeamSelect()">'+teamName()+'</span><span class="sep"> › </span><span class="cur">'+label+'</span>';
+  return '<span class="cur">'+label+'</span>';
+}
 function updateBC() {
   var bc=document.getElementById('bc');
-  var h='<span onclick="goHome()">Home</span>';
+  var h='';
+  if(cu && cu.role==='manager' && curTeam)
+    h='<span onclick="showTeamSelect()">'+teamName()+'</span><span class="sep"> › </span><span onclick="goHome()">Home</span>';
+  else
+    h='<span onclick="goHome()">Home</span>';
   if(cMonth!==null) h+='<span class="sep"> › </span><span onclick="goToMonth()">'+MONTHS[cMonth]+'</span>';
   if(cWeek!==null)  h+='<span class="sep"> › </span><span onclick="goToWeek()">Week '+cWeek+'</span>';
   if(cEmp!==null)   h+='<span class="sep"> › </span><span class="cur">'+cEmp+'</span>';
@@ -1461,7 +1583,7 @@ function updateBC() {
 }
 function goHome()    { cMonth=null; cWeek=null; cEmp=null; initMonths(); showPage('pg-months'); updateBC(); }
 function goToMonth() { cWeek=null; cEmp=null; document.getElementById('wtitle').textContent=MONTHS[cMonth]+' 2026'; showPage('pg-weeks'); updateBC(); }
-function goToWeek()  { cEmp=null; initEmpGrid(); document.getElementById('etitle').textContent='Week '+cWeek+' — '+MONTHS[cMonth]+' 2026'; showPage('pg-emps'); updateBC(); }
+function goToWeek()  { cEmp=null; var s=document.getElementById('emp-search'); if(s) s.value=''; initEmpGrid(); document.getElementById('etitle').textContent='Week '+cWeek+' — '+MONTHS[cMonth]+' 2026'; showPage('pg-emps'); updateBC(); }
 
 // ── Month & Week Selectors ────────────────────────────────────
 function initMonths() {
@@ -1485,7 +1607,7 @@ function initMonths() {
   }
 }
 function selMonth(i) { cMonth=i; document.getElementById('wtitle').textContent=MONTHS[i]+' 2026'; updateBC(); showPage('pg-weeks'); }
-function selWeek(w)  { cWeek=w; initEmpGrid(); document.getElementById('etitle').textContent='Week '+w+' — '+MONTHS[cMonth]+' 2026'; updateBC(); showPage('pg-emps'); }
+function selWeek(w)  { cWeek=w; var s=document.getElementById('emp-search'); if(s) s.value=''; initEmpGrid(); document.getElementById('etitle').textContent='Week '+w+' — '+MONTHS[cMonth]+' 2026'; updateBC(); showPage('pg-emps'); }
 
 // ── Employee Grid ─────────────────────────────────────────────
 function initEmpGrid() {
@@ -1493,8 +1615,11 @@ function initEmpGrid() {
   var g=document.getElementById('egrid'); g.innerHTML='';
   var isV=cu.role==='viewer';
   document.getElementById('esub').textContent=isV?'Viewing your rating':'Select an employee to rate';
-  var list=isV?EMPS.filter(function(e){return e===cu.empName;}):EMPS;
-  if(!list.length) { g.innerHTML='<div class="empty">No employees visible for your account.</div>'; return; }
+  var srch=document.getElementById('emp-search'); if(srch) srch.style.display=isV?'none':'block';
+  var list=isV?EMPS.filter(function(e){return e===cu.empName;}):EMPS.slice();
+  var q=(srch&&srch.value||'').trim().toLowerCase();
+  if(q && !isV) list=list.filter(function(e){ return e.toLowerCase().indexOf(q)!==-1; });
+  if(!list.length) { g.innerHTML='<div class="empty">'+(q?('No employee matches “'+escHtml(q)+'”.'):'No employees visible for your account.')+'</div>'; return; }
   for(var i=0;i<list.length;i++) {
     (function(emp){
       var rated=getRating(cMonth,cWeek,emp)!==null;
@@ -1711,8 +1836,8 @@ function renderMyRatings() {
             var kd=KPI_DEFS[ki], kv=r.kpi[kd.key];
             if(kv!==undefined && kv!=='' && kv!==null){
               kfilled++;
-              var st='';
-              if(kd.targetNum!==null){ var kn=parseFloat(kv); if(!isNaN(kn)){ var met=(kd.key==='aht')?kn<=kd.targetNum:(kd.key==='reopen')?kn===0:kn>=kd.targetNum; st=met?'<span class="kpi-status met">✓ Met</span>':'<span class="kpi-status notmet">✗ Below</span>'; } }
+              var st=''; var kn=parseFloat(kv);
+              if(!isNaN(kn)){ var m=kpiMet(kd,kn); st=(m===true)?'<span class="kpi-status met">✓ Met</span>':(m===false)?'<span class="kpi-status notmet">✗ Below</span>':''; }
               krows+='<div class="rrow"><span class="rrl">'+kd.name+' <span style="color:var(--muted);font-size:11px">(Target: '+escHtml(kd.target)+')</span></span><span style="display:flex;align-items:center;gap:8px"><span class="rrscore">'+escHtml(String(kv))+escHtml(kd.unit)+'</span>'+st+'</span></div>';
             }
           }
@@ -1777,11 +1902,17 @@ function renderAccessTable() {
         var left=document.createElement('div'); left.style.cssText='display:flex;align-items:center;gap:10px;';
         left.innerHTML='<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:Syne,sans-serif;flex-shrink:0;">'+initials(emp)+'</div>'
           +'<div><div style="font-size:13px;font-weight:500;">'+emp+'</div><div style="font-size:11px;color:var(--muted);">#'+String(idx+1).padStart(2,'0')+'</div></div>';
+        var actions=document.createElement('div'); actions.style.cssText='display:flex;gap:6px;flex-shrink:0;';
+        var renBtn=document.createElement('button');
+        renBtn.textContent='✏️ Rename';
+        renBtn.style.cssText='background:rgba(124,111,255,0.16);border:1px solid rgba(124,111,255,0.3);color:var(--accent);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;';
+        renBtn.onclick=(function(e){ return function(){ renameEmployee(e); }; })(emp);
         var btn=document.createElement('button');
         btn.textContent='🗑 Remove';
-        btn.style.cssText='background:rgba(255,77,109,0.12);border:1px solid rgba(255,77,109,0.25);color:var(--danger);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;flex-shrink:0;';
+        btn.style.cssText='background:rgba(255,77,109,0.12);border:1px solid rgba(255,77,109,0.25);color:var(--danger);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;';
         btn.onclick=(function(e){ return function(){ deleteEmployee(e); }; })(emp);
-        d.appendChild(left); d.appendChild(btn); eml.appendChild(d);
+        actions.appendChild(renBtn); actions.appendChild(btn);
+        d.appendChild(left); d.appendChild(actions); eml.appendChild(d);
       })(EMPS[i],i);
     }
   }
@@ -1822,6 +1953,7 @@ function renderAccessTable() {
       tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tb.appendChild(tr);
     })(EMPS[i],i);
   }
+  renderKPIEditor();
 }
 
 function assignEmp(emp,idx) {
@@ -1856,6 +1988,97 @@ function updateEmp(emp,idx) {
   if(!newPass) { showToast('Password cannot be empty','error'); return; }
   map[emp]={ email:newEmail, pass:newPass }; setMap(map);
   showToast('Credentials updated for '+emp+' ✓','success'); renderAccessTable();
+}
+
+// ── Rename an employee (migrates ratings, login, photo, salary-sheet column) ──
+function renameEmployee(oldName) {
+  if(cu.role!=='manager') return;
+  var newName=prompt('Rename “'+oldName+'” to:', oldName);
+  if(newName===null) return;
+  newName=newName.trim();
+  if(!newName) { showToast('Name cannot be empty','error'); return; }
+  if(newName===oldName) return;
+  var list=getEmps();
+  for(var i=0;i<list.length;i++){ if(list[i]!==oldName && list[i].toLowerCase()===newName.toLowerCase()){ showToast('“'+newName+'” already exists in this team','error'); return; } }
+  var idx=list.indexOf(oldName);
+  if(idx===-1) { showToast('Employee not found in this team','error'); return; }
+  list[idx]=newName; saveEmps(list); EMPS=list;
+  // migrate ratings (all months/weeks) from old name -> new name
+  var moved=0;
+  for(var mi=0; mi<MONTHS.length; mi++) for(var w=1; w<=4; w++){
+    var oldKey='r26_'+mi+'_w'+w+'_'+oldName;
+    var r=lsGet(oldKey);
+    if(r!==null && r!==undefined){ setRating(mi,w,newName,r); dbDelete(oldKey); moved++; }
+  }
+  // migrate login mapping + photo
+  var map=getMap(); if(map[oldName]!==undefined){ map[newName]=map[oldName]; delete map[oldName]; setMap(map); }
+  var ph=lsGetLocal('photo_'+oldName); if(ph){ lsSetLocal('photo_'+newName, ph); try{ localStorage.removeItem('photo_'+oldName); }catch(e){} }
+  // rename the column in the salary sheet too
+  syncRenameAgent(oldName, newName);
+  showToast('Renamed to “'+newName+'” ✓'+(moved?(' ('+moved+' rating'+(moved===1?'':'s')+' moved)'):''),'success');
+  renderAccessTable();
+}
+function syncRenameAgent(oldName, newName) {
+  if(!GAS_ENABLED) return;
+  fetch(GAS_URL, { method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
+    body: JSON.stringify({ action:'renameAgent', oldName:oldName, newName:newName }) }).catch(function(){});
+}
+
+// ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
+function renderKPIEditor() {
+  var tb=document.getElementById('kpi-edit-tbody'); if(!tb) return; tb.innerHTML='';
+  for(var i=0;i<KPI_DEFS.length;i++) appendKPIEditRow(KPI_DEFS[i]);
+}
+function appendKPIEditRow(def) {
+  var tb=document.getElementById('kpi-edit-tbody'); if(!tb) return;
+  var key=(def&&def.key)?def.key:('k_'+Math.random().toString(36).slice(2,8));
+  var dir=inferDir(def||{});
+  var tr=document.createElement('tr');
+  tr.setAttribute('data-key', key);
+  function cell(cls,val,ph,w){ var td=document.createElement('td'); if(w) td.style.minWidth=w; td.innerHTML='<input type="text" class="'+cls+'" value="'+escHtml(val==null?'':String(val))+'" placeholder="'+ph+'" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:12px;outline:none;">'; return td; }
+  tr.appendChild(cell('kpi-e-name', def?def.name:'', 'Criterion name','150px'));
+  tr.appendChild(cell('kpi-e-desc', def?def.desc:'', 'Short description','180px'));
+  tr.appendChild(cell('kpi-e-target', def?def.target:'', 'e.g. 90%','120px'));
+  tr.appendChild(cell('kpi-e-unit', def?def.unit:'%', '%','70px'));
+  var tdNum=document.createElement('td'); tdNum.innerHTML='<input type="number" step="any" class="kpi-e-num" value="'+((def&&def.targetNum!=null)?def.targetNum:'')+'" placeholder="—" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;outline:none;">'; tr.appendChild(tdNum);
+  var tdDir=document.createElement('td');
+  tdDir.innerHTML='<select class="kpi-e-dir" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text);font-size:12px;outline:none;">'
+    +'<option value="gte"'+(dir==='gte'?' selected':'')+'>≥ target</option>'
+    +'<option value="lte"'+(dir==='lte'?' selected':'')+'>≤ target</option>'
+    +'<option value="zero"'+(dir==='zero'?' selected':'')+'>= 0</option>'
+    +'<option value="none"'+(dir==='none'?' selected':'')+'>no status</option></select>';
+  tr.appendChild(tdDir);
+  var tdDel=document.createElement('td'); var del=document.createElement('button'); del.className='rbtn'; del.textContent='🗑'; del.title='Remove criterion'; del.onclick=function(){ if(tr.parentNode) tr.parentNode.removeChild(tr); }; tdDel.appendChild(del); tr.appendChild(tdDel);
+  tb.appendChild(tr);
+}
+function addKPIRow() { appendKPIEditRow(null); }
+function saveKPIDefs() {
+  if(cu.role!=='manager') return;
+  var rows=document.querySelectorAll('#kpi-edit-tbody tr');
+  var arr=[], seen={};
+  for(var i=0;i<rows.length;i++){
+    var tr=rows[i];
+    var name=(tr.querySelector('.kpi-e-name').value||'').trim();
+    if(!name) continue;
+    var key=tr.getAttribute('data-key')||('k_'+Math.random().toString(36).slice(2,8));
+    if(seen[key]) key='k_'+Math.random().toString(36).slice(2,8);
+    seen[key]=1;
+    var numRaw=(tr.querySelector('.kpi-e-num').value||'').trim();
+    var targetNum= numRaw===''?null:parseFloat(numRaw); if(isNaN(targetNum)) targetNum=null;
+    arr.push({ key:key, name:name, desc:(tr.querySelector('.kpi-e-desc').value||'').trim(), target:(tr.querySelector('.kpi-e-target').value||'').trim(), unit:(tr.querySelector('.kpi-e-unit').value||'').trim(), targetNum:targetNum, dir:tr.querySelector('.kpi-e-dir').value });
+  }
+  if(!arr.length){ showToast('Add at least one criterion before saving','error'); return; }
+  KPI_DEFS=arr; lsSet('kpi_defs', arr);
+  showToast('KPI criteria saved ✓ ('+arr.length+')','success');
+  renderKPIEditor();
+}
+function resetKPIDefs() {
+  if(cu.role!=='manager') return;
+  if(!confirm('Reset all KPI criteria back to the built-in defaults? Your custom criteria list will be replaced for everyone.')) return;
+  KPI_DEFS=JSON.parse(JSON.stringify(BUILTIN_KPI_DEFS));
+  lsSet('kpi_defs', KPI_DEFS);
+  renderKPIEditor();
+  showToast('KPI criteria reset to defaults ✓','info');
 }
 
 // ── Bulk Credential CSV Upload ────────────────────────────────
@@ -2401,6 +2624,7 @@ window.onload = async function() {
   var overlay=document.getElementById('loading-overlay');
   if(overlay) overlay.style.display='flex';
   await loadAllData();
+  loadKPIDefs();
   if(overlay) overlay.style.display='none';
   document.getElementById('login-screen').style.display='flex';
 
