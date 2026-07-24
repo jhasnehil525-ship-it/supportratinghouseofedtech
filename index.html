@@ -372,9 +372,35 @@ header {
 
 @media(max-width:860px){
   header,.bc,.main{ padding-left:20px; padding-right:20px; }
+  header{ height:auto; min-height:64px; padding-top:8px; padding-bottom:8px; flex-wrap:wrap; row-gap:8px; }
+  .hr{ flex-wrap:wrap; row-gap:8px; }
+  .htabs{ overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch; }
+  .htab{ white-space:nowrap; flex:0 0 auto; }
   .rlayout { grid-template-columns:1fr; }
   .wgrid { grid-template-columns:repeat(2,1fr); }
   .scalecard { position:static; }
+}
+
+/* Phones — stack the header cleanly, truncate long names, make tabs scroll */
+@media(max-width:600px){
+  header,.bc,.main{ padding-left:14px; padding-right:14px; }
+  header{ min-height:56px; }
+  .hlogo{ width:30px; height:30px; font-size:14px; }
+  .htitle{ font-size:15px; }
+  .hr{ width:100%; gap:8px; justify-content:flex-start; }
+  .uchip{ order:1; padding:4px 10px 4px 5px; }
+  .uname{ display:block; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rbadge{ order:2; font-size:10px; padding:3px 8px; }
+  .sync-chip{ order:3; }
+  .sync-chip span{ display:none; }
+  #team-chip{ order:4; }
+  .logout-btn{ order:5; padding:6px 12px; font-size:12px; }
+  .htabs{ order:6; width:100%; padding:4px; scrollbar-width:none; }
+  .htabs::-webkit-scrollbar{ display:none; }
+  .main{ padding-top:24px; padding-bottom:24px; }
+  .ptitle{ font-size:23px; }
+  .egrid{ grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+  .login-card{ padding:32px 22px; }
 }
 
 /* ════════════════════ PREMIUM POLISH ════════════════════ */
@@ -2507,7 +2533,7 @@ function init3DBackground() {
   camera.lookAt(0, -1, 0);
 
   // grid of points on the XZ plane; Y is animated as a flowing wave
-  var SIZE = 64, SPREAD = 60, half = SPREAD/2;
+  var SIZE = (window.innerWidth < 600) ? 40 : 64, SPREAD = 60, half = SPREAD/2;
   var count = SIZE*SIZE;
   var positions = new Float32Array(count*3);
   var colors    = new Float32Array(count*3);
