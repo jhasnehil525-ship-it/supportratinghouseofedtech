@@ -1854,7 +1854,11 @@ function renderMyRatings() {
         mhtml+='<div class="wacc"><div class="wah" onclick="this.nextElementSibling.classList.toggle(\'open\')"><h5>Week '+w+'</h5><div style="display:flex;align-items:center;gap:8px"><span class="avgb">Avg: '+r.avg+'</span><span style="color:var(--muted);font-size:12px">▼</span></div></div><div class="wab">'+rows+commentHtml+kpiHtml+'</div></div>';
       }
     }
-    if(mhas) { html+='<div class="macc"><div class="mah" onclick="this.nextElementSibling.classList.toggle(\'open\')"><h4>'+MONTHS[mi]+' 2026</h4><span>▼</span></div><div class="mab">'+mhtml+'</div></div>'; }
+    if(mhas) {
+      var mAvg=getMonthAvg(emp,mi);
+      var mAvgTxt=(mAvg!==null)?mAvg.toFixed(2):'—';
+      html+='<div class="macc"><div class="mah" onclick="this.nextElementSibling.classList.toggle(\'open\')"><div><h4>'+MONTHS[mi]+' 2026</h4><div style="font-size:12px;color:var(--accent3);font-weight:700;margin-top:3px;">Monthly Avg: '+mAvgTxt+' / 5.00</div></div><span>▼</span></div><div class="mab">'+mhtml+'</div></div>';
+    }
   }
   if(!any) html+='<div class="empty" style="margin-top:32px"><div style="font-size:40px;margin-bottom:12px">📋</div><div>No ratings submitted for you yet.</div><div style="font-size:12px;margin-top:6px">Check back after your manager completes the weekly review.</div></div>';
   el.innerHTML=html;
