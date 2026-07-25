@@ -1203,21 +1203,47 @@ function teamKey()  { return 'employee_list_' + (curTeam || 'support'); }
 function teamName() { for (var i=0;i<TEAMS.length;i++) if (TEAMS[i].id===curTeam) return TEAMS[i].name; return 'Support Team'; }
 // One-time split of the existing single roster into the two team rosters.
 function ensureTeamRosters() {
-  if (lsGet('employee_list_support') || lsGet('employee_list_quality')) return;
-  var current = lsGet('employee_list') || DEFAULT_EMPS.slice();
-  var quality = [], support = [];
-  for (var i=0;i<current.length;i++) {
-    var isQ = QUALITY_SEED.some(function(q){ return normTok(q)===normTok(current[i]); });
-    (isQ?quality:support).push(current[i]);
+  if (!lsGet('employee_list_support') && !lsGet('employee_list_quality')) {
+    var current = lsGet('employee_list') || DEFAULT_EMPS.slice();
+    var quality = [], support = [];
+    for (var i=0;i<current.length;i++) {
+      var isQ = QUALITY_SEED.some(function(q){ return normTok(q)===normTok(current[i]); });
+      (isQ?quality:support).push(current[i]);
+    }
+    QUALITY_SEED.forEach(function(q){ if(!quality.some(function(x){return normTok(x)===normTok(q);})) quality.push(q); });
+    lsSet('employee_list_support', support);
+    lsSet('employee_list_quality', quality);
   }
-  QUALITY_SEED.forEach(function(q){ if(!quality.some(function(x){return normTok(x)===normTok(q);})) quality.push(q); });
-  lsSet('employee_list_support', support);
-  lsSet('employee_list_quality', quality);
+  ensureLeadRoster();
+}
+// One-time setup of the Team Lead roster: seed it, pull those names out of the
+// other teams (they were promoted), and assign their logins (Google sign-in
+// matches by email). Ratings still write to the same sheets, keyed by name.
+function ensureLeadRoster() {
+  if (lsGet('employee_list_lead')) return;
+  var lead = LEAD_SEED.slice();
+  lsSet('employee_list_lead', lead);
+  ['support','quality'].forEach(function(tid){
+    var key='employee_list_'+tid, list=lsGet(key);
+    if(list && list.length){
+      var filtered=list.filter(function(nm){ return !lead.some(function(L){ return normTok(L)===normTok(nm); }); });
+      if(filtered.length!==list.length) lsSet(key, filtered);
+    }
+  });
+  var map=getMap();
+  for(var i=0;i<LEAD_LOGINS.length;i++){
+    var L=LEAD_LOGINS[i], cur=map[L.name];
+    var hasEmail = cur && (typeof cur==='string' ? cur : cur.email);
+    if(!hasEmail) map[L.name]={ email:L.email, pass:EP };
+  }
+  setMap(map);
 }
 function teamOfEmployee(name) {
   ensureTeamRosters();
-  var q = lsGet('employee_list_quality') || [];
-  return q.some(function(x){ return normTok(x)===normTok(name); }) ? 'quality' : 'support';
+  var inTeam=function(tid){ return (lsGet('employee_list_'+tid)||[]).some(function(x){ return normTok(x)===normTok(name); }); };
+  if (inTeam('lead')) return 'lead';
+  if (inTeam('quality')) return 'quality';
+  return 'support';
 }
 function getEmps()  { ensureTeamRosters(); return lsGet(teamKey()) || []; }
 function saveEmps(list) { lsSet(teamKey(), list); }
@@ -1243,10 +1269,18 @@ var EMPS = DEFAULT_EMPS;
 // salary sheet stays shared exactly as before.
 var TEAMS = [
   { id:'support', name:'Support Team' },
-  { id:'quality', name:'Quality for Support' }
+  { id:'quality', name:'Quality for Support' },
+  { id:'lead',    name:'Team Lead of Support Team' }
 ];
-// Seed used ONLY on first run to split the existing roster into the two teams.
+// Seed used ONLY on first run to split the existing roster into support/quality.
 var QUALITY_SEED = ['Sandeepan','Asif','Sharique','Hamidul','Laboni','Amit','Sushmita','Liza'];
+// Team leads (promoted from Support). Seeded once; ratings still write to the same sheets.
+var LEAD_SEED = ['Mohammad Abul Kalam Azad','Kulsum Sheikh','Soukhin Bhattacherjee'];
+var LEAD_LOGINS = [
+  { name:'Mohammad Abul Kalam Azad', email:'abul.azad.ost@houseofedtech.in' },
+  { name:'Kulsum Sheikh',            email:'kulsum.sheikh.ost@houseofedtech.in' },
+  { name:'Soukhin Bhattacherjee',    email:'soukhin.bhattacherjee.ost@houseofedtech.in' }
+];
 
 var KPI_DEFS = [
   { key:'quality',       name:'Quality',                      desc:'How good and correct your replies are.',                 target:'90%',          unit:'%',    targetNum:90  },
@@ -2736,7 +2770,7 @@ function voiceNameScore(cand, emp){
 }
 function voiceFindEmployee(cand){
   ensureTeamRosters();
-  var rosters=[{id:'support',list:lsGet('employee_list_support')||[]},{id:'quality',list:lsGet('employee_list_quality')||[]}];
+  var rosters=[{id:'support',list:lsGet('employee_list_support')||[]},{id:'quality',list:lsGet('employee_list_quality')||[]},{id:'lead',list:lsGet('employee_list_lead')||[]}];
   var best=null;
   for(var ri=0;ri<rosters.length;ri++){
     var R=rosters[ri];
