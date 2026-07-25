@@ -502,6 +502,12 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
 .email-btn { width:100%; margin-top:10px; padding:13px; background:linear-gradient(120deg,rgba(74,184,255,0.16),rgba(56,239,125,0.16)); border:1px solid rgba(74,184,255,0.4); border-radius:12px; color:#7fd4ff; font-family:'Syne',sans-serif; font-size:14px; font-weight:700; cursor:pointer; transition:all 0.18s; }
 .email-btn:hover { border-color:rgba(74,184,255,0.7); box-shadow:0 6px 18px -6px rgba(74,184,255,0.5); }
 .email-btn:disabled { opacity:0.6; cursor:default; }
+.voice-fab{ position:fixed; left:20px; bottom:22px; z-index:400; width:56px; height:56px; border-radius:50%; border:none; cursor:pointer; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; font-size:22px; display:none; align-items:center; justify-content:center; box-shadow:0 10px 30px rgba(124,111,255,0.5); transition:transform .15s, box-shadow .2s; }
+.voice-fab:hover{ transform:translateY(-2px); box-shadow:0 14px 36px rgba(124,111,255,0.6); }
+.voice-fab.listening{ background:linear-gradient(135deg,var(--danger),var(--accent2)); animation:voicePulse 1.1s ease-in-out infinite; }
+@keyframes voicePulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(255,77,109,0.55);} 50%{ box-shadow:0 0 0 15px rgba(255,77,109,0);} }
+.voice-status{ position:fixed; left:20px; bottom:88px; z-index:400; display:none; background:var(--surface-solid); border:1px solid var(--border); border-radius:12px; padding:9px 14px; font-size:12px; color:var(--text); max-width:76vw; box-shadow:0 8px 24px rgba(0,0,0,0.55); }
+@media(max-width:600px){ .voice-fab{ left:14px; bottom:16px; width:52px; height:52px; } .voice-status{ left:14px; bottom:76px; } }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" defer></script>
@@ -828,6 +834,8 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
   </div>
 </div>
 
+<button id="voice-fab" class="voice-fab" type="button" onclick="voiceToggle()" title="Voice command" aria-label="Voice command">🎤</button>
+<div id="voice-status" class="voice-status"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1489,6 +1497,7 @@ function startApp() {
   document.getElementById('access-sec').style.display='none';
   document.getElementById('ratings-sec').style.display='block';
   setupHeader();
+  var vf0=document.getElementById('voice-fab'); if(vf0) vf0.style.display=(cu.role==='manager' && VOICE.supported)?'flex':'none';
   cMonth=null; cWeek=null; cEmp=null;
   if(cu.role==='manager') {
     document.getElementById('htabs-viewer').style.display='none';
@@ -1545,6 +1554,8 @@ function doLogout() {
   document.getElementById('lemail').value='';
   document.getElementById('lpass').value='';
   document.getElementById('lerr').style.display='none';
+  var vfx=document.getElementById('voice-fab'); if(vfx) vfx.style.display='none';
+  voiceSetListening(false);
 }
 
 function setupHeader() {
@@ -1668,8 +1679,10 @@ function initEmpGrid() {
 // ── Rating Form ───────────────────────────────────────────────
 function selEmp(emp) { cEmp=emp; viewOnly=(cu.role==='viewer'); updateBC(); buildForm(emp); showPage('pg-rating'); }
 var curRatings = {};
+var critAppliers = {};
 
 function buildForm(emp) {
+  critAppliers={};
   document.getElementById('fav').textContent=initials(emp);
   document.getElementById('fname').textContent=emp;
   document.getElementById('fctx').textContent='Week '+cWeek+' — '+MONTHS[cMonth]+' 2026';
@@ -1748,6 +1761,16 @@ function buildForm(emp) {
         if(sel<0) sel=Math.floor(curRatings[crit]||0);
         apply(sel, parseInt(this.value,10));
       });
+
+      critAppliers[crit]=function(v){
+        v=Math.max(0,Math.min(5,v));
+        var ip=Math.floor(v+0.0001), t=Math.round((v-ip)*10);
+        if(ip===5) t=0; if(t<0) t=0; if(t>9) t=9;
+        for(var k2=0;k2<intButtons.length;k2++) intButtons[k2].classList.toggle('on', parseInt(intButtons[k2].getAttribute('data-n'),10)===ip);
+        decRow.classList.add('show');
+        if(ip===5){ decSlider.value=0; decSlider.disabled=true; } else { decSlider.disabled=false; decSlider.value=t; }
+        apply(ip,t);
+      };
 
       var ccRow=document.createElement('div'); ccRow.className='ccrow';
       ccRow.innerHTML='<span class="cclabel">💬</span><input type="text" class="ccinput" placeholder="Comment on '+crit+' (optional)">';
@@ -2656,9 +2679,167 @@ function syncAddAgent(name) {
   }).catch(function(){});
 }
 
+// ── Voice commands (Web Speech API) ───────────────────────────
+var VOICE = { rec:null, listening:false, supported:false };
+var lastVoiceError = '';
+var VOICE_CRIT_ALIASES = [
+  { label:'Attendance / Availability',     keys:['attendance','availability','available','present','punctual','punctuality'] },
+  { label:'Professionalism / Behavior',    keys:['professionalism','professional','behaviour','behavior','discipline','conduct','attitude'] },
+  { label:'Support Resolution Rate + FCR', keys:['resolution','resolutions','resolve','fcr','first contact','support resolution'] },
+  { label:'Ownership',                     keys:['ownership','owner','accountability','responsibility'] },
+  { label:'Quality & CSAT',                keys:['quality','csat','satisfaction','customer satisfaction'] },
+  { label:'Proactiveness',                 keys:['proactiveness','proactive','proactivity','initiative'] }
+];
+function vnorm(s){ return (s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim(); }
+function vSubset(a,b){ if(!a.length) return false; for(var i=0;i<a.length;i++) if(b.indexOf(a[i])===-1) return false; return true; }
+function voiceEditDist(a,b){ var m=a.length,n=b.length; if(!m)return n; if(!n)return m; var prev=[],cur=[],i,j; for(j=0;j<=n;j++)prev[j]=j; for(i=1;i<=m;i++){cur[0]=i; for(j=1;j<=n;j++){var cost=a.charAt(i-1)===b.charAt(j-1)?0:1; cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+cost);} for(j=0;j<=n;j++)prev[j]=cur[j];} return prev[n]; }
+function voiceParseNumber(s){
+  s=' '+(s||'').toLowerCase()+' ';
+  s=s.replace(/\bpoint\b/g,' . ');
+  var words={zero:'0',one:'1',two:'2',three:'3',four:'4',five:'5',six:'6',seven:'7',eight:'8',nine:'9'};
+  for(var w in words) s=s.replace(new RegExp('\\b'+w+'\\b','g'),' '+words[w]+' ');
+  s=s.replace(/(\d)\s*\.\s*(\d)/g,'$1.$2');
+  var m=s.match(/\d+(?:\.\d+)?/);
+  if(!m) return null;
+  var v=parseFloat(m[0]);
+  return isNaN(v)?null:v;
+}
+function voiceParseMonth(t){
+  for(var i=0;i<MONTHS.length;i++){ var full=MONTHS[i].toLowerCase(), ab=full.slice(0,3); if(new RegExp('\\b('+full+'|'+ab+')\\b').test(t)) return i; }
+  return -1;
+}
+function voiceParseWeek(t){
+  if(/\b(4th|fourth|week\s*4|week\s*four)\b/.test(t)) return 4;
+  if(/\b(3rd|third|week\s*3|week\s*three)\b/.test(t)) return 3;
+  if(/\b(2nd|second|week\s*2|week\s*two)\b/.test(t)) return 2;
+  if(/\b(1st|first|week\s*1|week\s*one)\b/.test(t)) return 1;
+  var m=t.match(/week\s*(\d)/); if(m){ var w=parseInt(m[1],10); if(w>=1&&w<=4) return w; }
+  m=t.match(/(\d)\s*(?:st|nd|rd|th)?\s*week/); if(m){ var w2=parseInt(m[1],10); if(w2>=1&&w2<=4) return w2; }
+  return 0;
+}
+function voiceExtractName(t){
+  var s=' '+t+' ';
+  for(var i=0;i<MONTHS.length;i++){ var full=MONTHS[i].toLowerCase(), ab=full.slice(0,3); s=s.replace(new RegExp('\\b('+full+'|'+ab+')\\b','g'),' '); }
+  s=s.replace(/\b(open|opens|go|goto|to|show|display|pull|up|rating|ratings|score|scores|for|the|of|please|in|on|and|week|weeks)\b/g,' ');
+  s=s.replace(/\b(1st|2nd|3rd|4th|first|second|third|fourth|one|two|three|four|\d+)\b/g,' ');
+  return s.replace(/\s+/g,' ').trim();
+}
+function voiceNameScore(cand, emp){
+  var nc=vnorm(cand), ne=vnorm(emp);
+  if(!nc||!ne) return 0;
+  if(nc===ne) return 4;
+  var tc=nc.split(' ').filter(Boolean), te=ne.split(' ').filter(Boolean);
+  if(vSubset(tc,te)||vSubset(te,tc)) return 3;
+  for(var i=0;i<tc.length;i++) if(te.indexOf(tc[i])!==-1 && tc[i].length>=3) return 2;
+  for(i=0;i<tc.length;i++) for(var j=0;j<te.length;j++) if(tc[i].length>=4&&te[j].length>=4&&voiceEditDist(tc[i],te[j])<=1) return 1;
+  return 0;
+}
+function voiceFindEmployee(cand){
+  ensureTeamRosters();
+  var rosters=[{id:'support',list:lsGet('employee_list_support')||[]},{id:'quality',list:lsGet('employee_list_quality')||[]}];
+  var best=null;
+  for(var ri=0;ri<rosters.length;ri++){
+    var R=rosters[ri];
+    for(var i=0;i<R.list.length;i++){
+      var sc=voiceNameScore(cand,R.list[i]);
+      if(sc>0 && (!best || sc>best.score || (sc===best.score && R.id===curTeam && best.team!==curTeam))) best={ name:R.list[i], team:R.id, score:sc };
+    }
+  }
+  return best;
+}
+function voiceMatchCriterion(t){
+  var best=null, bestLen=0;
+  for(var i=0;i<VOICE_CRIT_ALIASES.length;i++){
+    var a=VOICE_CRIT_ALIASES[i];
+    if(CRITERIA.indexOf(a.label)===-1) continue;
+    for(var k=0;k<a.keys.length;k++){ var kw=a.keys[k]; if(t.indexOf(kw)!==-1 && kw.length>bestLen){ best=a.label; bestLen=kw.length; } }
+  }
+  if(best) return best;
+  var toks=vnorm(t).split(' ');
+  for(var c=0;c<CRITERIA.length;c++){ var ct=vnorm(CRITERIA[c]).split(' '); for(var x=0;x<toks.length;x++) if(toks[x].length>=4 && ct.indexOf(toks[x])!==-1) return CRITERIA[c]; }
+  return null;
+}
+function voiceActivateTeam(id){
+  if(curTeam!==id){ curTeam=id; EMPS=getEmps(); loadKPIDefs(); }
+  var mt=document.getElementById('htabs-manager'); if(mt) mt.style.display='flex';
+  var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
+  var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
+}
+function voiceOpenRating(name, mo, wk){
+  if(!cu || cu.role!=='manager'){ lastVoiceError='Only managers can open ratings by voice'; return false; }
+  if(!name){ lastVoiceError='Say the employee name too, e.g. "open Nikita for July week 2"'; return false; }
+  var found=voiceFindEmployee(name);
+  if(!found){ lastVoiceError='Couldn\'t find "'+name+'" in either team'; return false; }
+  voiceActivateTeam(found.team);
+  var secs=['graphs-sec','rankings-sec','toppers-sec','export-sec','access-sec'];
+  for(var i=0;i<secs.length;i++){ var el=document.getElementById(secs[i]); if(el) el.style.display='none'; }
+  document.getElementById('ratings-sec').style.display='block';
+  var tabs=document.querySelectorAll('#htabs-manager .htab'); for(var k=0;k<tabs.length;k++) tabs[k].classList.toggle('active', k===0);
+  cMonth=mo; cWeek=wk;
+  selEmp(found.name);
+  showToast('Opened '+found.name+' — '+MONTHS[mo]+' 2026, Week '+wk+' · '+teamName(),'success');
+  return true;
+}
+function voiceSetCriterion(label, val){
+  if(!cEmp || viewOnly){ lastVoiceError='Open an employee rating first, then set a score'; return false; }
+  if(!critAppliers[label]){ lastVoiceError='"'+label+'" isn\'t on this form'; return false; }
+  var v=Math.max(0,Math.min(5,val));
+  critAppliers[label](v);
+  showToast('Set "'+label+'" to '+v.toFixed(1)+' — say "save" to store','success');
+  return true;
+}
+function voiceExecute(text){
+  var t=(text||'').toLowerCase().trim();
+  if(!t) return false;
+  var mo=voiceParseMonth(t);
+  if(mo!==-1){ var wk=voiceParseWeek(t)||1; return voiceOpenRating(voiceExtractName(t), mo, wk); }
+  if(/\bsave\b/.test(t)){ if(cEmp && !viewOnly){ saveRating(); return true; } lastVoiceError='Open an employee rating first'; return false; }
+  var crit=voiceMatchCriterion(t), num=voiceParseNumber(t);
+  if(crit && num!==null) return voiceSetCriterion(crit,num);
+  if(num!==null && !crit) lastVoiceError='Which criterion? e.g. "put '+num+' in ownership"';
+  return false;
+}
+function voiceHandle(transcripts){
+  lastVoiceError='';
+  for(var i=0;i<transcripts.length;i++){ if(voiceExecute(transcripts[i])) return; }
+  showToast(lastVoiceError || ('Heard: "'+(transcripts[0]||'')+'" — try "open <name> for <month> week 2" or "put 4.5 in ownership"'), lastVoiceError?'error':'info');
+}
+function voiceShowStatus(msg){ var s=document.getElementById('voice-status'); if(!s) return; s.style.display='block'; s.textContent=msg; }
+function voiceHideStatus(){ var s=document.getElementById('voice-status'); if(s) s.style.display='none'; }
+function voiceSetListening(on){ VOICE.listening=on; var f=document.getElementById('voice-fab'); if(f) f.classList.toggle('listening',on); if(on) voiceShowStatus('Listening…'); }
+function voiceInit(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ VOICE.supported=false; return; }
+  VOICE.supported=true;
+  var rec=new SR();
+  rec.lang='en-IN'; rec.interimResults=false; rec.maxAlternatives=4; rec.continuous=false;
+  rec.onresult=function(e){
+    var r=e.results[e.results.length-1], list=[];
+    for(var i=0;i<r.length;i++) list.push(r[i].transcript);
+    voiceShowStatus('“'+(list[0]||'')+'”');
+    setTimeout(voiceHideStatus, 3200);
+    voiceHandle(list);
+  };
+  rec.onerror=function(e){
+    voiceSetListening(false); voiceHideStatus();
+    if(e.error==='not-allowed'||e.error==='service-not-allowed') showToast('Microphone is blocked — allow mic access for this site','error');
+    else if(e.error==='no-speech') showToast('Didn\'t hear anything — tap and speak','info');
+    else if(e.error==='audio-capture') showToast('No microphone found','error');
+  };
+  rec.onend=function(){ voiceSetListening(false); };
+  VOICE.rec=rec;
+}
+function voiceToggle(){
+  if(!VOICE.supported){ showToast('Voice commands need Chrome or Edge (Android or desktop)','error'); return; }
+  if(VOICE.listening){ try{ VOICE.rec.stop(); }catch(e){} return; }
+  try{ VOICE.rec.start(); voiceSetListening(true); }
+  catch(e){ /* start called twice — ignore */ }
+}
+
 // ── Boot ──────────────────────────────────────────────────────
 window.onload = async function() {
   init3DBackground();
+  voiceInit();
   var overlay=document.getElementById('loading-overlay');
   if(overlay) overlay.style.display='flex';
   await loadAllData();
