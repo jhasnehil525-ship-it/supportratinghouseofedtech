@@ -362,7 +362,7 @@ header {
 .rrscore { font-family:'Syne',sans-serif; font-weight:800; font-size:13px; color:var(--accent4); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:2px 12px; }
 
 /* TOAST */
-.toast { position:fixed; bottom:26px; right:26px; padding:12px 18px; border-radius:12px; font-size:13px; font-weight:600; z-index:999; transform:translateY(80px); opacity:0; transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1); }
+.toast { position:fixed; bottom:26px; right:26px; padding:12px 18px; border-radius:12px; font-size:13px; font-weight:600; z-index:999; max-width:calc(100vw - 52px); word-break:break-word; transform:translateY(80px); opacity:0; transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1); }
 .toast.show { transform:translateY(0); opacity:1; }
 .toast.success { background:var(--accent3); color:#080810; }
 .toast.error { background:var(--danger); color:white; }
@@ -2788,15 +2788,62 @@ function voiceSetCriterion(label, val){
   showToast('Set "'+label+'" to '+v.toFixed(1)+' — say "save" to store','success');
   return true;
 }
+function voiceNormalizeNums(s){
+  s=' '+(s||'').toLowerCase()+' ';
+  s=s.replace(/\bpoint\b/g,' . ');
+  var words={zero:'0',one:'1',two:'2',three:'3',four:'4',five:'5',six:'6',seven:'7',eight:'8',nine:'9'};
+  for(var w in words) s=s.replace(new RegExp('\\b'+w+'\\b','g'),' '+words[w]+' ');
+  s=s.replace(/(\d)\s*\.\s*(\d)/g,'$1.$2');
+  return s;
+}
+// Extract every (criterion, number) pair from one utterance, e.g.
+// "3.4 in attendance, 2.9 in professionalism, 4 in ownership".
+// Anchors on each criterion word and grabs the nearest unused number, so both
+// "3.4 in attendance" and "attendance 3.4" work.
+function voiceParsePairs(raw){
+  var s=voiceNormalizeNums(raw);
+  var numRe=/\d+(?:\.\d+)?/g, nums=[], m;
+  while((m=numRe.exec(s))!==null) nums.push({ val:parseFloat(m[0]), pos:m.index, used:false });
+  if(!nums.length) return [];
+  var crits=[];
+  for(var a=0;a<VOICE_CRIT_ALIASES.length;a++){
+    var al=VOICE_CRIT_ALIASES[a];
+    if(CRITERIA.indexOf(al.label)===-1) continue;
+    var pos=-1;
+    for(var k=0;k<al.keys.length;k++){ var idx=s.indexOf(al.keys[k]); if(idx!==-1 && (pos===-1 || idx<pos)) pos=idx; }
+    if(pos!==-1) crits.push({ label:al.label, pos:pos });
+  }
+  if(!crits.length) return [];
+  crits.sort(function(x,y){ return x.pos-y.pos; });
+  var pairs=[];
+  for(var c=0;c<crits.length;c++){
+    var best=-1, bestDist=1e9;
+    for(var n=0;n<nums.length;n++){ if(nums[n].used) continue; var d=Math.abs(nums[n].pos - crits[c].pos); if(d<bestDist){ bestDist=d; best=n; } }
+    if(best!==-1){ nums[best].used=true; pairs.push({ label:crits[c].label, val:nums[best].val }); }
+  }
+  return pairs;
+}
+function voiceSetCriteriaMulti(pairs){
+  if(!cEmp || viewOnly){ lastVoiceError='Open an employee rating first, then set scores'; return false; }
+  var done=[];
+  for(var i=0;i<pairs.length;i++){
+    var lbl=pairs[i].label, v=Math.max(0,Math.min(5,pairs[i].val));
+    if(critAppliers[lbl]){ critAppliers[lbl](v); done.push(lbl.replace(/\s*[\/&+].*$/,'').trim()+' '+v.toFixed(1)); }
+  }
+  if(!done.length){ lastVoiceError='Couldn\'t match a criterion — say e.g. "3.4 in attendance, 2.9 in professionalism"'; return false; }
+  showToast('Set '+done.length+' criteri'+(done.length===1?'on':'a')+': '+done.join(', ')+' — say "save" to store','success');
+  return true;
+}
 function voiceExecute(text){
   var t=(text||'').toLowerCase().trim();
   if(!t) return false;
   var mo=voiceParseMonth(t);
   if(mo!==-1){ var wk=voiceParseWeek(t)||1; return voiceOpenRating(voiceExtractName(t), mo, wk); }
-  if(/\bsave\b/.test(t)){ if(cEmp && !viewOnly){ saveRating(); return true; } lastVoiceError='Open an employee rating first'; return false; }
-  var crit=voiceMatchCriterion(t), num=voiceParseNumber(t);
-  if(crit && num!==null) return voiceSetCriterion(crit,num);
-  if(num!==null && !crit) lastVoiceError='Which criterion? e.g. "put '+num+' in ownership"';
+  if(/\bsave\b/.test(t)){ if(cEmp && !viewOnly){ saveRating(); voiceStop(); return true; } lastVoiceError='Open an employee rating first'; return false; }
+  var pairs=voiceParsePairs(t);
+  if(pairs.length) return voiceSetCriteriaMulti(pairs);
+  var num=voiceParseNumber(t);
+  if(num!==null) lastVoiceError='Which criterion? e.g. "put '+num+' in ownership"';
   return false;
 }
 function voiceHandle(transcripts){
@@ -2806,34 +2853,44 @@ function voiceHandle(transcripts){
 }
 function voiceShowStatus(msg){ var s=document.getElementById('voice-status'); if(!s) return; s.style.display='block'; s.textContent=msg; }
 function voiceHideStatus(){ var s=document.getElementById('voice-status'); if(s) s.style.display='none'; }
-function voiceSetListening(on){ VOICE.listening=on; var f=document.getElementById('voice-fab'); if(f) f.classList.toggle('listening',on); if(on) voiceShowStatus('Listening…'); }
+function voiceSetListening(on){ VOICE.listening=on; var f=document.getElementById('voice-fab'); if(f) f.classList.toggle('listening',on); if(on) voiceShowStatus('Listening… tap the mic again to stop'); }
+function voiceStop(){ VOICE.wantListening=false; try{ VOICE.rec && VOICE.rec.stop(); }catch(e){} voiceSetListening(false); }
 function voiceInit(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ VOICE.supported=false; return; }
-  VOICE.supported=true;
+  VOICE.supported=true; VOICE.wantListening=false; VOICE.lastStart=0;
   var rec=new SR();
-  rec.lang='en-IN'; rec.interimResults=false; rec.maxAlternatives=4; rec.continuous=false;
+  rec.lang='en-IN'; rec.interimResults=false; rec.maxAlternatives=4; rec.continuous=true;
   rec.onresult=function(e){
-    var r=e.results[e.results.length-1], list=[];
-    for(var i=0;i<r.length;i++) list.push(r[i].transcript);
-    voiceShowStatus('“'+(list[0]||'')+'”');
-    setTimeout(voiceHideStatus, 3200);
-    voiceHandle(list);
+    for(var ri=e.resultIndex; ri<e.results.length; ri++){
+      var res=e.results[ri]; if(!res.isFinal) continue;
+      var list=[]; for(var i=0;i<res.length;i++) list.push(res[i].transcript);
+      voiceShowStatus('“'+(list[0]||'')+'”');
+      var acted=false;
+      for(var a=0;a<list.length;a++){ if(voiceExecute(list[a])){ acted=true; break; } }
+      if(!acted) showToast(lastVoiceError || ('Heard: "'+(list[0]||'')+'" — try "3.4 in attendance, 2.9 in professionalism…"'), lastVoiceError?'error':'info');
+    }
   };
   rec.onerror=function(e){
-    voiceSetListening(false); voiceHideStatus();
-    if(e.error==='not-allowed'||e.error==='service-not-allowed') showToast('Microphone is blocked — allow mic access for this site','error');
-    else if(e.error==='no-speech') showToast('Didn\'t hear anything — tap and speak','info');
-    else if(e.error==='audio-capture') showToast('No microphone found','error');
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){ VOICE.wantListening=false; showToast('Microphone is blocked — allow mic access for this site','error'); }
+    else if(e.error==='audio-capture'){ VOICE.wantListening=false; showToast('No microphone found','error'); }
+    // 'no-speech'/'aborted' are benign in continuous mode — onend restarts if still wanted
   };
-  rec.onend=function(){ voiceSetListening(false); };
+  rec.onend=function(){
+    if(VOICE.wantListening){
+      var now=Date.now();
+      if(now - VOICE.lastStart > 400){ VOICE.lastStart=now; try{ rec.start(); return; }catch(e){} }
+    }
+    voiceSetListening(false); voiceHideStatus();
+  };
   VOICE.rec=rec;
 }
 function voiceToggle(){
   if(!VOICE.supported){ showToast('Voice commands need Chrome or Edge (Android or desktop)','error'); return; }
-  if(VOICE.listening){ try{ VOICE.rec.stop(); }catch(e){} return; }
+  if(VOICE.wantListening){ voiceStop(); return; }
+  VOICE.wantListening=true; VOICE.lastStart=Date.now();
   try{ VOICE.rec.start(); voiceSetListening(true); }
-  catch(e){ /* start called twice — ignore */ }
+  catch(e){ try{ VOICE.rec.stop(); }catch(e2){} }
 }
 
 // ── Boot ──────────────────────────────────────────────────────
