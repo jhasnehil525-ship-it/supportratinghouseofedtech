@@ -578,6 +578,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         <button class="htab" type="button" onclick="switchTab('rankings')">🏆 Rankings</button>
         <button class="htab" type="button" onclick="switchTab('toppers')">⭐ Top Performers</button>
       </div>
+      <button id="viewas-btn" type="button" onclick="openViewAsPicker()" style="display:none;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:40px;padding:6px 14px;color:var(--text);font-size:13px;font-weight:600;cursor:pointer;">👁 View as</button>
       <button id="team-chip" type="button" onclick="showTeamSelect()" style="display:none;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:40px;padding:6px 14px;color:var(--text);font-size:13px;font-weight:600;cursor:pointer;"><span id="team-chip-name">Support Team</span><span style="opacity:0.55;font-size:12px;">⇄ switch</span></button>
       <div class="uchip">
         <div class="uav" id="uav">P</div>
@@ -841,6 +842,23 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
   </div>
 </div>
 
+<!-- View-as-agent picker -->
+<div id="viewas-overlay" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(4,4,10,0.7);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);align-items:flex-start;justify-content:center;padding:56px 16px;">
+  <div style="background:var(--surface-solid);border:1px solid var(--border);border-radius:18px;width:100%;max-width:460px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,0.6);overflow:hidden;">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-family:Syne,sans-serif;font-weight:800;font-size:16px;">View as agent</div>
+      <button type="button" onclick="closeViewAsPicker()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">×</button>
+    </div>
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border);">
+      <input type="text" id="viewas-search" placeholder="🔍 Search agent…" oninput="renderViewAsList()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
+    </div>
+    <div id="viewas-list" style="overflow-y:auto;padding:8px;"></div>
+  </div>
+</div>
+<div id="impersonation-banner" style="display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:550;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-radius:40px;padding:8px 8px 8px 18px;align-items:center;gap:12px;box-shadow:0 12px 34px rgba(124,111,255,0.5);font-size:13px;font-weight:600;max-width:calc(100vw - 32px);">
+  <span id="impersonation-text">Viewing as agent</span>
+  <button type="button" onclick="exitViewAs()" style="background:rgba(255,255,255,0.22);border:none;color:#fff;border-radius:30px;padding:7px 14px;font-weight:700;font-size:12px;cursor:pointer;white-space:nowrap;">Exit view</button>
+</div>
 <button id="voice-fab" class="voice-fab" type="button" onclick="voiceToggle()" title="Voice command" aria-label="Voice command">🎤</button>
 <div id="voice-status" class="voice-status"></div>
 <div class="toast" id="toast"></div>
@@ -1379,6 +1397,7 @@ var ADMINS = [
 var EP = atob('ZW1wbG95ZWUxMjM=');   // default fallback password "employee123"
 
 var cu = null, cMonth = null, cWeek = null, cEmp = null, viewOnly = false, curTeam = null;
+var impersonating = false, realCU = null;
 
 // ── KPI Functions ─────────────────────────────────────────────
 function toggleKPI() {
@@ -1560,6 +1579,7 @@ function startApp() {
   document.getElementById('ratings-sec').style.display='block';
   setupHeader();
   var vf0=document.getElementById('voice-fab'); if(vf0) vf0.style.display=(cu.role==='manager' && VOICE.supported)?'flex':'none';
+  var vab0=document.getElementById('viewas-btn'); if(vab0) vab0.style.display=(cu.role==='manager')?'flex':'none';
   cMonth=null; cWeek=null; cEmp=null;
   if(cu.role==='manager') {
     document.getElementById('htabs-viewer').style.display='none';
@@ -1573,6 +1593,66 @@ function startApp() {
     renderMyRatings();
     showPage('pg-myratings');
   }
+}
+
+// ── View as agent (manager impersonation, read-only) ──────────
+function allAgents(){
+  ensureTeamRosters();
+  var out=[], seen={};
+  for(var t=0;t<TEAMS.length;t++){
+    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+    for(var i=0;i<list.length;i++){
+      var key=list[i].toLowerCase();
+      if(!seen[key]){ seen[key]=1; out.push({ name:list[i], team:TEAMS[t].name }); }
+    }
+  }
+  out.sort(function(a,b){ return a.name.localeCompare(b.name); });
+  return out;
+}
+function openViewAsPicker(){
+  if(!cu || cu.role!=='manager') return;
+  var ov=document.getElementById('viewas-overlay'); if(ov) ov.style.display='flex';
+  var s=document.getElementById('viewas-search'); if(s) s.value='';
+  renderViewAsList();
+  if(s) setTimeout(function(){ try{ s.focus(); }catch(e){} }, 50);
+}
+function closeViewAsPicker(){ var ov=document.getElementById('viewas-overlay'); if(ov) ov.style.display='none'; }
+function renderViewAsList(){
+  var box=document.getElementById('viewas-list'); if(!box) return;
+  var q=(document.getElementById('viewas-search')&&document.getElementById('viewas-search').value||'').trim().toLowerCase();
+  var list=allAgents();
+  if(q) list=list.filter(function(a){ return a.name.toLowerCase().indexOf(q)!==-1; });
+  box.innerHTML='';
+  if(!list.length){ box.innerHTML='<div class="empty" style="padding:24px;">No agent matches.</div>'; return; }
+  for(var i=0;i<list.length;i++){
+    (function(a){
+      var d=document.createElement('div');
+      d.style.cssText='display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;';
+      d.onmouseover=function(){ d.style.background='var(--surface2)'; };
+      d.onmouseout=function(){ d.style.background='none'; };
+      d.innerHTML='<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:11px;font-weight:700;flex-shrink:0;">'+initials(a.name)+'</div><div style="min-width:0;"><div style="font-size:13px;font-weight:500;">'+escHtml(a.name)+'</div><div style="font-size:11px;color:var(--muted);">'+escHtml(a.team)+'</div></div>';
+      d.onclick=function(){ viewAsAgent(a.name); };
+      box.appendChild(d);
+    })(list[i]);
+  }
+}
+function viewAsAgent(name){
+  if(!cu || cu.role!=='manager') return;
+  realCU = cu; impersonating = true;
+  var map=getMap(), rec=map[name];
+  var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
+  cu = { email:email, role:'viewer', empName:name };
+  closeViewAsPicker();
+  startApp();
+  var b=document.getElementById('impersonation-banner'); if(b) b.style.display='flex';
+  var bt=document.getElementById('impersonation-text'); if(bt) bt.textContent='👁 Viewing as '+name;
+}
+function exitViewAs(){
+  if(!impersonating) return;
+  impersonating=false;
+  cu = realCU || cu; realCU=null;
+  var b=document.getElementById('impersonation-banner'); if(b) b.style.display='none';
+  startApp();
 }
 
 // ── Manager team picker ───────────────────────────────────────
@@ -1618,6 +1698,9 @@ function doLogout() {
   document.getElementById('lerr').style.display='none';
   var vfx=document.getElementById('voice-fab'); if(vfx) vfx.style.display='none';
   voiceSetListening(false);
+  impersonating=false; realCU=null;
+  var ib=document.getElementById('impersonation-banner'); if(ib) ib.style.display='none';
+  var vab=document.getElementById('viewas-btn'); if(vab) vab.style.display='none';
 }
 
 function setupHeader() {
