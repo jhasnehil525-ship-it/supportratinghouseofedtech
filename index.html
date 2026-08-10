@@ -781,6 +781,18 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       </div>
 
       <!-- KPI criteria editor -->
+      <!-- Rating criteria editor -->
+      <div class="asec" id="criteria-manage-sec" style="margin-bottom:20px;">
+        <h3 id="criteria-manage-title">Manage Rating Criteria</h3>
+        <p>These are the 0–5 star criteria on the rating form. They apply to <strong>this team only</strong> — each team has its own set. Renaming or removing a criterion changes new ratings and how past ratings display; saved averages stay intact.</p>
+        <div id="criteria-edit-list" style="display:flex;flex-direction:column;gap:8px;max-width:560px;"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+          <button class="abtn" type="button" onclick="addCriteriaRow()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;padding:11px 20px;">＋ Add Criterion</button>
+          <button class="abtn" type="button" onclick="saveCriteria()" style="padding:11px 22px;">Save Criteria ✓</button>
+          <button type="button" onclick="resetCriteria()" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;padding:10px 14px;cursor:pointer;">↺ Reset to defaults</button>
+        </div>
+      </div>
+
       <div class="asec" id="kpi-manage-sec" style="margin-bottom:20px;">
         <h3 id="kpi-manage-title">Manage KPI Criteria</h3>
         <p>Edit each criterion's name, target and unit — or add and remove criteria. Changes apply to <strong>this team only</strong> — the other team keeps its own separate KPI list. Existing recorded values stay linked to their criterion. “Good when” controls when a value shows ✓ Met vs ✗ Below.</p>
@@ -1332,7 +1344,7 @@ function kpiMet(kpi, num) {
   return null;
 }
 
-var CRITERIA = [
+var DEFAULT_CRITERIA = [
   'Attendance / Availability',
   'Professionalism / Behavior',
   'Support Resolution Rate + FCR',
@@ -1340,6 +1352,26 @@ var CRITERIA = [
   'Quality & CSAT',
   'Proactiveness'
 ];
+// Quality for Support uses a different criteria set (Process Understanding / Work Quality).
+var QUALITY_CRITERIA = [
+  'Attendance / Availability',
+  'Professionalism / Behavior',
+  'Process Understanding',
+  'Ownership',
+  'Work Quality',
+  'Proactiveness'
+];
+// Rating criteria are per-team and stored in the DB — no separate sheet needed.
+var CRITERIA = DEFAULT_CRITERIA.slice();
+function criteriaKey(){ return 'criteria_' + (curTeam || 'support'); }
+function criteriaSeedFor(team){ return (team==='quality') ? QUALITY_CRITERIA.slice() : DEFAULT_CRITERIA.slice(); }
+function loadCriteria(){
+  var saved = lsGet(criteriaKey());
+  if(saved && saved.length){ CRITERIA = saved; return; }
+  var seed = criteriaSeedFor(curTeam);
+  CRITERIA = seed;
+  lsSet(criteriaKey(), seed);
+}
 
 // ── Admin (manager) accounts — base64-obfuscated so source isn't plain at a glance ──
 var ADMINS = [
@@ -1538,7 +1570,7 @@ function startApp() {
     showTeamSelect();                 // managers choose a team first
   } else {
     curTeam = teamOfEmployee(cu.empName);
-    EMPS = getEmps(); loadKPIDefs();
+    EMPS = getEmps(); loadKPIDefs(); loadCriteria();
     document.getElementById('htabs-manager').style.display='none';
     document.getElementById('htabs-viewer').style.display='flex';
     var tc0=document.getElementById('team-chip'); if(tc0) tc0.style.display='none';
@@ -1571,7 +1603,7 @@ function renderTeamCards() {
   }
 }
 function selectTeam(id) {
-  curTeam=id; EMPS=getEmps(); loadKPIDefs();
+  curTeam=id; EMPS=getEmps(); loadKPIDefs(); loadCriteria();
   document.getElementById('htabs-manager').style.display='flex';
   var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
   var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
@@ -2047,6 +2079,7 @@ function renderAccessTable() {
       tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tb.appendChild(tr);
     })(EMPS[i],i);
   }
+  renderCriteriaEditor();
   renderKPIEditor();
 }
 
@@ -2119,6 +2152,48 @@ function syncRenameAgent(oldName, newName) {
 }
 
 // ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
+// ── Rating criteria editor (per-team) ─────────────────────────
+function renderCriteriaEditor() {
+  var ttl=document.getElementById('criteria-manage-title'); if(ttl && curTeam) ttl.textContent='Manage Rating Criteria — '+teamName();
+  var box=document.getElementById('criteria-edit-list'); if(!box) return; box.innerHTML='';
+  for(var i=0;i<CRITERIA.length;i++) appendCriteriaRow(CRITERIA[i]);
+}
+function appendCriteriaRow(name) {
+  var box=document.getElementById('criteria-edit-list'); if(!box) return;
+  var row=document.createElement('div');
+  row.style.cssText='display:flex;gap:8px;align-items:center;';
+  var inp=document.createElement('input'); inp.type='text'; inp.className='crit-e-name';
+  inp.value=(name==null?'':String(name)); inp.placeholder='Criterion name';
+  inp.style.cssText='flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;outline:none;';
+  var del=document.createElement('button'); del.className='rbtn'; del.textContent='🗑'; del.title='Remove criterion';
+  del.onclick=function(){ if(row.parentNode) row.parentNode.removeChild(row); };
+  row.appendChild(inp); row.appendChild(del); box.appendChild(row);
+}
+function addCriteriaRow() { appendCriteriaRow(''); }
+function saveCriteria() {
+  if(cu.role!=='manager') return;
+  var inputs=document.querySelectorAll('#criteria-edit-list .crit-e-name');
+  var arr=[], seen={};
+  for(var i=0;i<inputs.length;i++){
+    var nm=(inputs[i].value||'').trim();
+    if(!nm) continue;
+    var key=nm.toLowerCase();
+    if(seen[key]) continue;
+    seen[key]=1; arr.push(nm);
+  }
+  if(arr.length<2){ showToast('Add at least 2 criteria','error'); return; }
+  CRITERIA=arr; lsSet(criteriaKey(), arr);
+  showToast('Rating criteria saved ✓ ('+arr.length+')','success');
+  renderCriteriaEditor();
+}
+function resetCriteria() {
+  if(cu.role!=='manager') return;
+  if(!confirm('Reset rating criteria for '+teamName()+' back to its defaults?')) return;
+  CRITERIA=criteriaSeedFor(curTeam);
+  lsSet(criteriaKey(), CRITERIA);
+  renderCriteriaEditor();
+  showToast('Rating criteria reset ✓','info');
+}
 function renderKPIEditor() {
   var ttl=document.getElementById('kpi-manage-title'); if(ttl && curTeam) ttl.textContent='Manage KPI Criteria — '+teamName();
   var tb=document.getElementById('kpi-edit-tbody'); if(!tb) return; tb.innerHTML='';
@@ -2722,6 +2797,8 @@ var VOICE_CRIT_ALIASES = [
   { label:'Support Resolution Rate + FCR', keys:['resolution','resolutions','resolve','fcr','first contact','support resolution'] },
   { label:'Ownership',                     keys:['ownership','owner','accountability','responsibility'] },
   { label:'Quality & CSAT',                keys:['quality','csat','satisfaction','customer satisfaction'] },
+  { label:'Process Understanding',         keys:['process understanding','process','understanding'] },
+  { label:'Work Quality',                  keys:['work quality','quality of work','quality'] },
   { label:'Proactiveness',                 keys:['proactiveness','proactive','proactivity','initiative'] }
 ];
 function vnorm(s){ return (s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim(); }
@@ -2794,7 +2871,7 @@ function voiceMatchCriterion(t){
   return null;
 }
 function voiceActivateTeam(id){
-  if(curTeam!==id){ curTeam=id; EMPS=getEmps(); loadKPIDefs(); }
+  if(curTeam!==id){ curTeam=id; EMPS=getEmps(); loadKPIDefs(); loadCriteria(); }
   var mt=document.getElementById('htabs-manager'); if(mt) mt.style.display='flex';
   var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
   var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
