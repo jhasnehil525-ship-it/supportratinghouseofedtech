@@ -618,12 +618,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       <div class="page" id="pg-weeks">
         <div class="ptitle" id="wtitle">January 2026</div>
         <div class="psub">Select which week to rate</div>
-        <div class="wgrid">
-          <div class="wbtn" onclick="selWeek(1)"><div class="wn">1</div><div class="wl">Week</div></div>
-          <div class="wbtn" onclick="selWeek(2)"><div class="wn">2</div><div class="wl">Week</div></div>
-          <div class="wbtn" onclick="selWeek(3)"><div class="wn">3</div><div class="wl">Week</div></div>
-          <div class="wbtn" onclick="selWeek(4)"><div class="wn">4</div><div class="wl">Week</div></div>
-        </div>
+        <div class="wgrid" id="wgrid"></div>
       </div>
 
       <div class="page" id="pg-emps">
@@ -1144,9 +1139,10 @@ function refreshCurrentView() {
   if (document.getElementById('toppers-sec').style.display === 'block') { renderToppers(); return; }
   if (document.getElementById('graphs-sec').style.display === 'block') { renderGraph(); renderTeamChart(); return; }
   if (cu.role === 'viewer') { renderMyRatings(); return; }
-  if (cEmp !== null) { buildForm(cEmp); }
-  else if (cWeek !== null) { initEmpGrid(); }
-  else if (cMonth === null) { initMonths(); }
+  if (cEmp !== null && cWeek !== null) { buildForm(cEmp); }
+  else if (cEmp !== null) { renderWeekGrid(); }
+  else if (cMonth !== null) { initEmpGrid(); }
+  else { initMonths(); }
 }
 
 // ── DB Read / Write / Delete ─────────────────────────────────
@@ -1687,13 +1683,13 @@ function updateBC() {
   else
     h='<span onclick="goHome()">Home</span>';
   if(cMonth!==null) h+='<span class="sep"> › </span><span onclick="goToMonth()">'+MONTHS[cMonth]+'</span>';
-  if(cWeek!==null)  h+='<span class="sep"> › </span><span onclick="goToWeek()">Week '+cWeek+'</span>';
-  if(cEmp!==null)   h+='<span class="sep"> › </span><span class="cur">'+cEmp+'</span>';
+  if(cEmp!==null)   h+='<span class="sep"> › </span><span onclick="goToEmp()">'+cEmp+'</span>';
+  if(cWeek!==null)  h+='<span class="sep"> › </span><span class="cur">Week '+cWeek+'</span>';
   bc.innerHTML=h;
 }
 function goHome()    { cMonth=null; cWeek=null; cEmp=null; initMonths(); showPage('pg-months'); updateBC(); }
-function goToMonth() { cWeek=null; cEmp=null; document.getElementById('wtitle').textContent=MONTHS[cMonth]+' 2026'; showPage('pg-weeks'); updateBC(); }
-function goToWeek()  { cEmp=null; var s=document.getElementById('emp-search'); if(s) s.value=''; initEmpGrid(); document.getElementById('etitle').textContent='Week '+cWeek+' — '+MONTHS[cMonth]+' 2026'; showPage('pg-emps'); updateBC(); }
+function goToMonth() { cEmp=null; cWeek=null; var s=document.getElementById('emp-search'); if(s) s.value=''; document.getElementById('etitle').textContent=MONTHS[cMonth]+' 2026'; initEmpGrid(); showPage('pg-emps'); updateBC(); }
+function goToEmp()   { cWeek=null; document.getElementById('wtitle').textContent=cEmp+' — '+MONTHS[cMonth]+' 2026'; renderWeekGrid(); showPage('pg-weeks'); updateBC(); }
 
 // ── Month & Week Selectors ────────────────────────────────────
 function initMonths() {
@@ -1716,8 +1712,8 @@ function initMonths() {
     })(i);
   }
 }
-function selMonth(i) { cMonth=i; document.getElementById('wtitle').textContent=MONTHS[i]+' 2026'; updateBC(); showPage('pg-weeks'); }
-function selWeek(w)  { cWeek=w; var s=document.getElementById('emp-search'); if(s) s.value=''; initEmpGrid(); document.getElementById('etitle').textContent='Week '+w+' — '+MONTHS[cMonth]+' 2026'; updateBC(); showPage('pg-emps'); }
+function selMonth(i) { cMonth=i; cEmp=null; cWeek=null; var s=document.getElementById('emp-search'); if(s) s.value=''; document.getElementById('etitle').textContent=MONTHS[i]+' 2026'; initEmpGrid(); updateBC(); showPage('pg-emps'); }
+function selWeek(w)  { cWeek=w; selEmp(cEmp); }
 
 // ── Employee Grid ─────────────────────────────────────────────
 function initEmpGrid() {
@@ -1732,11 +1728,11 @@ function initEmpGrid() {
   if(!list.length) { g.innerHTML='<div class="empty">'+(q?('No employee matches “'+escHtml(q)+'”.'):'No employees visible for your account.')+'</div>'; return; }
   for(var i=0;i<list.length;i++) {
     (function(emp){
-      var rated=getRating(cMonth,cWeek,emp)!==null;
+      var rc=0; for(var w=1;w<=4;w++) if(getRating(cMonth,w,emp)) rc++;
       var idx=EMPS.indexOf(emp);
       var d=document.createElement('div'); d.className='ebtn';
-      d.innerHTML='<div class="eav">'+initials(emp)+'</div><div><div class="ename">'+emp+'</div><div class="enum">#'+String(idx+1).padStart(2,'0')+'</div></div>'+(rated?'<div class="edot"></div>':'');
-      d.onclick=function(){ selEmp(emp); };
+      d.innerHTML='<div class="eav">'+initials(emp)+'</div><div><div class="ename">'+emp+'</div><div class="enum">#'+String(idx+1).padStart(2,'0')+'</div></div>'+(rc>0?'<div style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:var(--accent3);background:rgba(56,239,125,0.12);border:1px solid rgba(56,239,125,0.25);border-radius:20px;padding:2px 8px;">'+rc+'/4</div>':'');
+      d.onclick=function(){ pickEmployee(emp); };
       g.appendChild(d);
     })(list[i]);
   }
@@ -1744,6 +1740,20 @@ function initEmpGrid() {
 
 // ── Rating Form ───────────────────────────────────────────────
 function selEmp(emp) { cEmp=emp; viewOnly=(cu.role==='viewer'); updateBC(); buildForm(emp); showPage('pg-rating'); }
+function pickEmployee(emp) { cEmp=emp; cWeek=null; document.getElementById('wtitle').textContent=emp+' — '+MONTHS[cMonth]+' 2026'; renderWeekGrid(); updateBC(); showPage('pg-weeks'); }
+function renderWeekGrid() {
+  var g=document.getElementById('wgrid'); if(!g) return; g.innerHTML='';
+  for(var w=1;w<=4;w++){
+    (function(wk){
+      var r=getRating(cMonth,wk,cEmp);
+      var done=r && r.avg && r.avg!=='—';
+      var d=document.createElement('div'); d.className='wbtn';
+      d.innerHTML='<div class="wn">'+wk+'</div><div class="wl">Week</div>'+(done?'<div style="margin-top:6px;font-size:11px;color:var(--accent3);font-weight:700;">✓ '+r.avg+'</div>':'');
+      d.onclick=function(){ selWeek(wk); };
+      g.appendChild(d);
+    })(w);
+  }
+}
 var curRatings = {};
 var critAppliers = {};
 
@@ -1894,7 +1904,7 @@ function saveRating() {
   setRating(cMonth,cWeek,cEmp,d);
   syncSalarySheet(cEmp, cMonth, cWeek, d.avg, false);  // mirror avg into salary sheet (saving no longer emails anyone)
   showToast('Rating saved by '+d.savedBy+' ✓','success');
-  setTimeout(function(){ saveBtn.disabled=false; saveBtn.textContent='Save Rating ✓'; initEmpGrid(); goToWeek(); },1000);
+  setTimeout(function(){ saveBtn.disabled=false; saveBtn.textContent='Save Rating ✓'; goToEmp(); },1000);
 }
 
 function undoRating() {
@@ -1915,7 +1925,7 @@ function deleteRating() {
   dbDelete('r26_'+cMonth+'_w'+cWeek+'_'+cEmp);
   syncSalarySheet(cEmp, cMonth, cWeek, '', true);   // clear the salary-sheet cell too
   showToast('Rating deleted','info');
-  setTimeout(function(){ initEmpGrid(); goToWeek(); },1000);
+  setTimeout(function(){ goToEmp(); },1000);
 }
 
 // ── Send the notification email on demand (separate from saving) ──
