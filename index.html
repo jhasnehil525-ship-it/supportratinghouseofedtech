@@ -571,7 +571,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         <button class="htab" type="button" onclick="switchTab('rankings')">🏆 Rankings</button>
         <button class="htab" type="button" onclick="switchTab('toppers')">⭐ Top Performers</button>
         <button class="htab" type="button" onclick="switchTab('export')">📥 Export CSV</button>
-        <button class="htab" type="button" onclick="switchTab('access')">Access Management</button>
+        <button id="tab-access" class="htab" type="button" onclick="switchTab('access')">Access Management</button>
       </div>
       <div id="htabs-viewer" style="display:none" class="htabs">
         <button class="htab active" type="button" onclick="switchTab('ratings')">My Ratings</button>
@@ -1398,6 +1398,11 @@ var EP = atob('ZW1wbG95ZWUxMjM=');   // default fallback password "employee123"
 
 var cu = null, cMonth = null, cWeek = null, cEmp = null, viewOnly = false, curTeam = null;
 var impersonating = false, realCU = null;
+function isManager(){ return cu && cu.role==='manager'; }
+function isRater(){ return cu && (cu.role==='manager' || cu.role==='lead'); }
+function isViewer(){ return cu && cu.role==='viewer'; }
+// Team Leads can rate the two employee teams but not the Team Lead team.
+function accessibleTeams(){ return (cu && cu.role==='lead') ? ['support','quality'] : ['support','quality','lead']; }
 
 // ── KPI Functions ─────────────────────────────────────────────
 function toggleKPI() {
@@ -1484,6 +1489,7 @@ function doLogin() {
       startApp(); return;
     }
   }
+  ensureTeamRosters();
   var map = getMap(), keys = Object.keys(map);
   for(var i=0;i<keys.length;i++) {
     var n=keys[i], rec=map[n];
@@ -1491,7 +1497,7 @@ function doLogin() {
     if(typeof rec==='string') { empEmail=rec.toLowerCase().trim(); empPass=EP; }
     else if(rec&&typeof rec==='object') { empEmail=(rec.email||'').toLowerCase().trim(); empPass=(rec.pass||'').trim(); }
     if(empEmail && empEmail===email && empPass===pass) {
-      cu = { email:email, role:'viewer', empName:n };
+      cu = { email:email, role:(teamOfEmployee(n)==='lead'?'lead':'viewer'), empName:n };
       startApp(); return;
     }
   }
@@ -1531,12 +1537,13 @@ function handleGoogleCredential(response) {
     }
   }
   // Employee (viewer) by assigned email?
+  ensureTeamRosters();
   var map = getMap(), keys = Object.keys(map);
   for(var i=0; i<keys.length; i++) {
     var rec = map[keys[i]];
     var e = (typeof rec==='string') ? rec : (rec && rec.email ? rec.email : '');
     if(e.toLowerCase().trim() === email) {
-      cu = { email:email, role:'viewer', empName:keys[i] };
+      cu = { email:email, role:(teamOfEmployee(keys[i])==='lead'?'lead':'viewer'), empName:keys[i] };
       startApp(); return;
     }
   }
@@ -1578,12 +1585,13 @@ function startApp() {
   document.getElementById('access-sec').style.display='none';
   document.getElementById('ratings-sec').style.display='block';
   setupHeader();
-  var vf0=document.getElementById('voice-fab'); if(vf0) vf0.style.display=(cu.role==='manager' && VOICE.supported)?'flex':'none';
-  var vab0=document.getElementById('viewas-btn'); if(vab0) vab0.style.display=(cu.role==='manager')?'flex':'none';
+  var vf0=document.getElementById('voice-fab'); if(vf0) vf0.style.display=(isRater() && VOICE.supported)?'flex':'none';
+  var vab0=document.getElementById('viewas-btn'); if(vab0) vab0.style.display=isManager()?'flex':'none';
   cMonth=null; cWeek=null; cEmp=null;
-  if(cu.role==='manager') {
+  if(isRater()) {
     document.getElementById('htabs-viewer').style.display='none';
-    showTeamSelect();                 // managers choose a team first
+    var ta=document.getElementById('tab-access'); if(ta) ta.style.display=isManager()?'':'none';
+    showTeamSelect();                 // pick a team first
   } else {
     curTeam = teamOfEmployee(cu.empName);
     EMPS = getEmps(); loadKPIDefs(); loadCriteria();
@@ -1668,7 +1676,9 @@ function showTeamSelect() {
 function renderTeamCards() {
   var g=document.getElementById('teamgrid'); if(!g) return; g.innerHTML='';
   ensureTeamRosters();
+  var acc=accessibleTeams();
   for(var i=0;i<TEAMS.length;i++){
+    if(acc.indexOf(TEAMS[i].id)===-1) continue;
     (function(t){
       var roster=lsGet('employee_list_'+t.id)||[];
       var d=document.createElement('div'); d.className='mbtn';
@@ -1707,18 +1717,19 @@ function setupHeader() {
   var name = cu.role==='manager' ? (cu.adminName||'Admin') : (cu.empName||cu.email);
   document.getElementById('uav').textContent = initials(name);
   document.getElementById('uname').textContent = name;
-  document.getElementById('urole').textContent = cu.role==='manager' ? 'Manager' : 'Employee';
+  document.getElementById('urole').textContent = cu.role==='manager' ? 'Manager' : cu.role==='lead' ? 'Team Lead' : 'Employee';
   var b = document.getElementById('rbadge');
-  b.textContent = cu.role==='manager' ? 'Manager' : 'View Only';
-  b.className = 'rbadge '+(cu.role==='manager'?'manager':'viewer');
+  b.textContent = cu.role==='manager' ? 'Manager' : cu.role==='lead' ? 'Team Lead' : 'View Only';
+  b.className = 'rbadge '+((cu.role==='manager'||cu.role==='lead')?'manager':'viewer');
 }
 
 // ── Tab Switching ─────────────────────────────────────────────
 function switchTab(tab) {
   var managerOnly = ['access','export','graphs'];
-  if(cu.role!=='manager' && managerOnly.indexOf(tab)!==-1) return;
+  if(tab==='access' && !isManager()) return;
+  if(!isRater() && managerOnly.indexOf(tab)!==-1) return;
   var tabs = document.querySelectorAll('.htab');
-  var tabNames = cu.role==='manager'
+  var tabNames = isRater()
     ? ['ratings','graphs','rankings','toppers','export','access']
     : ['ratings','rankings','toppers'];
   for(var ti=0;ti<tabs.length;ti++) tabs[ti].classList.toggle('active', tab===tabNames[ti]);
@@ -1754,14 +1765,14 @@ function switchTab(tab) {
 
 // ── Breadcrumb ────────────────────────────────────────────────
 function bcLabel(label) {
-  if(cu && cu.role==='manager' && curTeam)
+  if(isRater() && curTeam)
     return '<span onclick="showTeamSelect()">'+teamName()+'</span><span class="sep"> › </span><span class="cur">'+label+'</span>';
   return '<span class="cur">'+label+'</span>';
 }
 function updateBC() {
   var bc=document.getElementById('bc');
   var h='';
-  if(cu && cu.role==='manager' && curTeam)
+  if(isRater() && curTeam)
     h='<span onclick="showTeamSelect()">'+teamName()+'</span><span class="sep"> › </span><span onclick="goHome()">Home</span>';
   else
     h='<span onclick="goHome()">Home</span>';
@@ -1976,7 +1987,7 @@ function calcAvg() {
 }
 
 function saveRating() {
-  if(cu.role!=='manager') return;
+  if(!isRater()) return;
   var saveBtn=document.getElementById('save-btn');
   saveBtn.disabled=true; saveBtn.textContent='💾 Saving...';
   var existing=getRating(cMonth,cWeek,cEmp);
@@ -1991,7 +2002,7 @@ function saveRating() {
 }
 
 function undoRating() {
-  if(cu.role!=='manager') return;
+  if(!isRater()) return;
   var existing=getRating(cMonth,cWeek,cEmp);
   if(!existing||!existing.history||existing.history.length===0) { showToast('No previous version to undo to','error'); return; }
   var prev=existing.history[existing.history.length-1];
@@ -2003,7 +2014,7 @@ function undoRating() {
 }
 
 function deleteRating() {
-  if(cu.role!=='manager') return;
+  if(!isRater()) return;
   if(!confirm('Are you sure you want to delete this rating? This cannot be undone.')) return;
   dbDelete('r26_'+cMonth+'_w'+cWeek+'_'+cEmp);
   syncSalarySheet(cEmp, cMonth, cWeek, '', true);   // clear the salary-sheet cell too
@@ -2013,7 +2024,7 @@ function deleteRating() {
 
 // ── Send the notification email on demand (separate from saving) ──
 function sendRatingEmail() {
-  if(cu.role!=='manager') return;
+  if(!isRater()) return;
   var saved=getRating(cMonth,cWeek,cEmp);
   if(!saved) { showToast('Save a rating first, then send the email','error'); return; }
   var map=getMap(), rec=map[cEmp];
@@ -2940,7 +2951,9 @@ function voiceNameScore(cand, emp){
 }
 function voiceFindEmployee(cand){
   ensureTeamRosters();
-  var rosters=[{id:'support',list:lsGet('employee_list_support')||[]},{id:'quality',list:lsGet('employee_list_quality')||[]},{id:'lead',list:lsGet('employee_list_lead')||[]}];
+  var vacc=accessibleTeams();
+  var rosters=[];
+  for(var vti=0;vti<TEAMS.length;vti++){ if(vacc.indexOf(TEAMS[vti].id)!==-1) rosters.push({id:TEAMS[vti].id,list:lsGet('employee_list_'+TEAMS[vti].id)||[]}); }
   var best=null;
   for(var ri=0;ri<rosters.length;ri++){
     var R=rosters[ri];
@@ -2970,7 +2983,7 @@ function voiceActivateTeam(id){
   var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent=teamName();
 }
 function voiceOpenRating(name, mo, wk){
-  if(!cu || cu.role!=='manager'){ lastVoiceError='Only managers can open ratings by voice'; return false; }
+  if(!isRater()){ lastVoiceError='Only managers or team leads can open ratings by voice'; return false; }
   if(!name){ lastVoiceError='Say the employee name too, e.g. "open Nikita for July week 2"'; return false; }
   var found=voiceFindEmployee(name);
   if(!found){ lastVoiceError='Couldn\'t find "'+name+'" in either team'; return false; }
