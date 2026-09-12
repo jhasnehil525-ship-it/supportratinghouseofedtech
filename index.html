@@ -1571,6 +1571,26 @@ function deriveNameFromEmail(email){
   var local = String(email||'').split('@')[0].toLowerCase();
   return local.replace(/[._]+/g,' ').replace(/\b(ost|hoet)\b/g,' ').replace(/\s+/g,' ').trim();
 }
+// A longer token fuzzy-matches another only if they share the first two letters
+// and are within edit distance 2 (handles spelling variants like Apporva/Appurba).
+// Short tokens (<5) must match exactly, so lookalikes like Riya/Priya never merge.
+function fuzzyTokMatch(a, b){
+  if(a===b) return true;
+  if(a.length<5 || b.length<5) return false;
+  if(a.substr(0,2)!==b.substr(0,2)) return false;
+  if(Math.abs(a.length-b.length)>2) return false;
+  return voiceEditDist(a,b)<=2;
+}
+function allSignificantTokensMatch(rosterTokens, derivedTokens){
+  var required = rosterTokens.filter(function(t){ return t.length>=3; });  // ignore titles like "md"
+  if(!required.length) return false;
+  for(var i=0;i<required.length;i++){
+    var matched=false;
+    for(var j=0;j<derivedTokens.length;j++){ if(fuzzyTokMatch(required[i], derivedTokens[j])){ matched=true; break; } }
+    if(!matched) return false;
+  }
+  return true;
+}
 function matchEmployeeByEmail(email){
   ensureTeamRosters();
   var derived = deriveNameFromEmail(email);
@@ -1578,15 +1598,18 @@ function matchEmployeeByEmail(email){
   if(!dtok.length) return null;
   var all=[], seen={};
   for(var t=0;t<TEAMS.length;t++){ var list=lsGet('employee_list_'+TEAMS[t].id)||[]; for(var i=0;i<list.length;i++){ var k=list[i].toLowerCase(); if(!seen[k]){ seen[k]=1; all.push(list[i]); } } }
-  var exact=[], subset=[];
+  var exact=[], subset=[], fuzzy=[];
   for(var j=0;j<all.length;j++){
     var en=vnorm(all[j]); var etok=en.split(' ').filter(Boolean);
-    if(en===derived){ exact.push(all[j]); }
-    else if(etok.length && (vSubset(etok,dtok)||vSubset(dtok,etok))){ subset.push(all[j]); }
+    if(en===derived){ exact.push(all[j]); continue; }
+    if(etok.length && (vSubset(etok,dtok)||vSubset(dtok,etok))){ subset.push(all[j]); continue; }
+    if(etok.length && allSignificantTokensMatch(etok,dtok)){ fuzzy.push(all[j]); }
   }
   if(exact.length===1) return exact[0];
   if(exact.length>1) return null;      // ambiguous — don't guess (privacy)
   if(subset.length===1) return subset[0];
+  if(subset.length>1) return null;
+  if(fuzzy.length===1) return fuzzy[0]; // one confident spelling-variant match
   return null;                          // 0 or ambiguous
 }
 function handleGoogleCredential(response) {
