@@ -2054,10 +2054,30 @@ function undoRating() {
 function deleteRating() {
   if(!isRater()) return;
   if(!confirm('Are you sure you want to delete this rating? This cannot be undone.')) return;
+  var saved=getRating(cMonth,cWeek,cEmp);
+  logDeletion(cEmp, cMonth, cWeek, saved);          // record who deleted it, before it's gone
   dbDelete('r26_'+cMonth+'_w'+cWeek+'_'+cEmp);
   syncSalarySheet(cEmp, cMonth, cWeek, '', true);   // clear the salary-sheet cell too
   showToast('Rating deleted','info');
   setTimeout(function(){ goToEmp(); },1000);
+}
+function logDeletion(emp, monthIdx, week, saved) {
+  if(!GAS_ENABLED) return;
+  var by = cu ? (cu.adminName || cu.empName || cu.email || 'unknown') : 'unknown';
+  fetch(GAS_URL, {
+    method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
+    body: JSON.stringify({
+      action:'logDeletion',
+      deletedAt: new Date().toISOString(),
+      deletedBy: by,
+      employee: emp,
+      team: (typeof teamName==='function' ? teamName() : ''),
+      month: MONTHS[monthIdx],
+      week: week,
+      avg: saved ? (saved.avg||'') : '',
+      ratedBy: saved ? (saved.savedBy||'') : ''
+    })
+  }).catch(function(){});
 }
 
 // ── Send the notification email on demand (separate from saving) ──
