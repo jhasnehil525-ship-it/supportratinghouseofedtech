@@ -844,6 +844,17 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
 </div>
 
 <!-- View-as-agent picker -->
+<!-- Promote employee picker -->
+<div id="promote-overlay" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(4,4,10,0.7);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);align-items:center;justify-content:center;padding:24px 16px;">
+  <div style="background:var(--surface-solid);border:1px solid var(--border);border-radius:18px;width:100%;max-width:400px;box-shadow:0 30px 80px rgba(0,0,0,0.6);overflow:hidden;">
+    <div style="padding:18px 20px;border-bottom:1px solid var(--border);">
+      <div style="font-family:Syne,sans-serif;font-weight:800;font-size:16px;">Promote <span id="promote-name"></span></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">Choose the new role — they move out of this team.</div>
+    </div>
+    <div id="promote-options" style="padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
+    <div style="padding:0 14px 16px;"><button type="button" onclick="closePromote()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:13px;font-weight:600;padding:10px;cursor:pointer;">Cancel</button></div>
+  </div>
+</div>
 <div id="viewas-overlay" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(4,4,10,0.7);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);align-items:flex-start;justify-content:center;padding:56px 16px;">
   <div style="background:var(--surface-solid);border:1px solid var(--border);border-radius:18px;width:100%;max-width:460px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,0.6);overflow:hidden;">
     <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
@@ -1242,6 +1253,7 @@ function ensureTeamRosters() {
     lsSet('employee_list_quality', quality);
   }
   ensureLeadRoster();
+  ensureRosterUpdates();
 }
 // One-time setup of the Team Lead roster: seed it, pull those names out of the
 // other teams (they were promoted), and assign their logins (Google sign-in
@@ -1265,10 +1277,31 @@ function ensureLeadRoster() {
   }
   setMap(map);
 }
+// One-time roster update (v2): move Apporva & Md.Badruddin into Team Lead and
+// create the Subject Matter Expert team with Anwesa; pull them out of Support/Quality.
+function ensureRosterUpdates() {
+  if (lsGet('roster_v2_done')) return;
+  var sme = lsGet('employee_list_sme') || [];
+  SME_SEED.forEach(function(n){ if(!sme.some(function(x){ return normTok(x)===normTok(n); })) sme.push(n); });
+  lsSet('employee_list_sme', sme);
+  var lead = lsGet('employee_list_lead') || [];
+  LEAD_EXTRA_SEED.forEach(function(n){ if(!lead.some(function(x){ return normTok(x)===normTok(n); })) lead.push(n); });
+  lsSet('employee_list_lead', lead);
+  var moved = SME_SEED.concat(LEAD_EXTRA_SEED);
+  ['support','quality'].forEach(function(tid){
+    var key='employee_list_'+tid, list=lsGet(key);
+    if(list && list.length){
+      var f=list.filter(function(nm){ return !moved.some(function(m){ return normTok(m)===normTok(nm); }); });
+      if(f.length!==list.length) lsSet(key, f);
+    }
+  });
+  lsSet('roster_v2_done', 1);
+}
 function teamOfEmployee(name) {
   ensureTeamRosters();
   var inTeam=function(tid){ return (lsGet('employee_list_'+tid)||[]).some(function(x){ return normTok(x)===normTok(name); }); };
   if (inTeam('lead')) return 'lead';
+  if (inTeam('sme')) return 'sme';
   if (inTeam('quality')) return 'quality';
   return 'support';
 }
@@ -1297,12 +1330,16 @@ var EMPS = DEFAULT_EMPS;
 var TEAMS = [
   { id:'support', name:'Support Team' },
   { id:'quality', name:'Quality for Support' },
-  { id:'lead',    name:'Team Lead of Support Team' }
+  { id:'lead',    name:'Team Lead of Support Team' },
+  { id:'sme',     name:'Subject Matter Expert' }
 ];
 // Seed used ONLY on first run to split the existing roster into support/quality.
 var QUALITY_SEED = ['Sandeepan','Asif','Sharique','Hamidul','Laboni','Amit','Sushmita','Liza'];
 // Team leads (promoted from Support). Seeded once; ratings still write to the same sheets.
 var LEAD_SEED = ['Mohammad Abul Kalam Azad','Kulsum Sheikh','Soukhin Bhattacherjee'];
+// Later one-time roster update: Apporva & Md.Badruddin -> Team Lead; Anwesa -> Subject Matter Expert.
+var LEAD_EXTRA_SEED = ['Apporva','Md.Badruddin'];
+var SME_SEED = ['Anwesa'];
 var LEAD_LOGINS = [
   { name:'Mohammad Abul Kalam Azad', email:'abul.azad.ost@houseofedtech.in' },
   { name:'Kulsum Sheikh',            email:'kulsum.sheikh.ost@houseofedtech.in' },
@@ -1402,8 +1439,10 @@ var impersonating = false, realCU = null;
 function isManager(){ return cu && cu.role==='manager'; }
 function isRater(){ return cu && (cu.role==='manager' || cu.role==='lead'); }
 function isViewer(){ return cu && cu.role==='viewer'; }
-// Team Leads can rate the two employee teams but not the Team Lead team.
-function accessibleTeams(){ return (cu && cu.role==='lead') ? ['support','quality'] : ['support','quality','lead']; }
+// Team Leads can rate the two employee teams but not the Team Lead or SME teams.
+function accessibleTeams(){ return (cu && cu.role==='lead') ? ['support','quality'] : ['support','quality','lead','sme']; }
+// Managers = the built-in admins PLUS anyone promoted to Manager (stored in the DB).
+function allAdmins(){ var da = lsGet('dynamic_admins') || []; return ADMINS.concat(da); }
 
 // ── KPI Functions ─────────────────────────────────────────────
 function toggleKPI() {
@@ -1484,9 +1523,10 @@ function doLogin() {
   var pass  = passEl.value.trim();
   errEl.style.display = 'none';
   if(!email||!pass) { errEl.textContent='Please enter your email and password.'; errEl.style.display='block'; return; }
-  for(var ai=0;ai<ADMINS.length;ai++) {
-    if(email===ADMINS[ai].email.toLowerCase() && pass===ADMINS[ai].pass) {
-      cu = { email:email, role:'manager', empName:null, adminName:ADMINS[ai].name };
+  var admins_=allAdmins();
+  for(var ai=0;ai<admins_.length;ai++) {
+    if(email===String(admins_[ai].email||'').toLowerCase() && pass===admins_[ai].pass) {
+      cu = { email:email, role:'manager', empName:null, adminName:admins_[ai].name };
       startApp(); return;
     }
   }
@@ -1555,9 +1595,10 @@ function handleGoogleCredential(response) {
   if(payload.email_verified === false) { showLoginError('That Google email is not verified.'); return; }
   var email = String(payload.email).toLowerCase().trim();
   // Admin (manager)?
-  for(var ai=0; ai<ADMINS.length; ai++) {
-    if(email === ADMINS[ai].email.toLowerCase()) {
-      cu = { email:email, role:'manager', empName:null, adminName:ADMINS[ai].name };
+  var admins_=allAdmins();
+  for(var ai=0; ai<admins_.length; ai++) {
+    if(email === String(admins_[ai].email||'').toLowerCase()) {
+      cu = { email:email, role:'manager', empName:null, adminName:admins_[ai].name };
       startApp(); return;
     }
   }
@@ -2165,6 +2206,80 @@ function deleteEmployee(emp) {
   showToast(emp+' removed','info'); renderAccessTable();
 }
 
+// ── Promote employee (manager-only) ───────────────────────────
+function promoteTargets(){
+  if(curTeam==='sme') return [{id:'lead',label:'Team Lead'},{id:'manager',label:'Manager'}];
+  if(curTeam==='lead') return [{id:'manager',label:'Manager'}];
+  // support / quality (and fallback)
+  return [{id:'lead',label:'Team Lead'},{id:'sme',label:'Subject Matter Expert'},{id:'manager',label:'Manager'}];
+}
+function openPromote(name){
+  if(!isManager()) return;
+  var ov=document.getElementById('promote-overlay'); if(!ov) return;
+  document.getElementById('promote-name').textContent='“'+name+'”';
+  var box=document.getElementById('promote-options'); box.innerHTML='';
+  var targets=promoteTargets();
+  for(var i=0;i<targets.length;i++){
+    (function(t){
+      var b=document.createElement('button'); b.type='button';
+      b.style.cssText='width:100%;text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;padding:12px 14px;cursor:pointer;';
+      b.innerHTML='⬆ '+t.label+(t.id==='manager'?' <span style="font-size:11px;color:var(--accent3);font-weight:500;">— gets admin access</span>':'');
+      b.onmouseover=function(){ b.style.borderColor='var(--accent)'; };
+      b.onmouseout=function(){ b.style.borderColor='var(--border)'; };
+      b.onclick=function(){ doPromote(name, t.id, t.label); };
+      box.appendChild(b);
+    })(targets[i]);
+  }
+  ov.style.display='flex';
+}
+function closePromote(){ var ov=document.getElementById('promote-overlay'); if(ov) ov.style.display='none'; }
+function moveToTeam(name, targetId){
+  ensureTeamRosters();
+  for(var t=0;t<TEAMS.length;t++){
+    var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[];
+    var f=list.filter(function(n){ return normTok(n)!==normTok(name); });
+    if(f.length!==list.length) lsSet(key, f);
+  }
+  var tkey='employee_list_'+targetId, tlist=lsGet(tkey)||[];
+  if(!tlist.some(function(n){ return normTok(n)===normTok(name); })){ tlist.push(name); lsSet(tkey, tlist); }
+}
+function promoteToManager(name){
+  var map=getMap(), rec=map[name];
+  var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
+  if(!email){
+    email = prompt('Enter the company email for '+name+' so they can sign in as a Manager:', '');
+    if(email===null) return false;
+    email = email.trim().toLowerCase();
+  }
+  if(!email || email.indexOf('@')===-1){ showToast('A valid email is required to promote to Manager','error'); return false; }
+  var pass = (rec && typeof rec==='object' && rec.pass) ? rec.pass : EP;
+  var da = lsGet('dynamic_admins') || [];
+  var exists=false;
+  for(var i=0;i<da.length;i++){ if(String(da[i].email||'').toLowerCase()===email){ exists=true; break; } }
+  if(!exists){ da.push({ email:email, name:name, pass:pass }); lsSet('dynamic_admins', da); }
+  for(var t=0;t<TEAMS.length;t++){ var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[]; var f=list.filter(function(n){ return normTok(n)!==normTok(name); }); if(f.length!==list.length) lsSet(key, f); }
+  if(map[name]!==undefined){ delete map[name]; setMap(map); }
+  return true;
+}
+function doPromote(name, target, label){
+  if(!isManager()) return;
+  if(!confirm('Promote '+name+' to '+label+'?'+(target==='manager'?'\n\nThey will immediately get full Manager (admin) access.':''))) return;
+  if(target==='manager'){ if(!promoteToManager(name)) return; }
+  else { moveToTeam(name, target); }
+  EMPS=getEmps();
+  closePromote();
+  showToast(name+' promoted to '+label+' ✓','success');
+  renderAccessTable();
+}
+function revokeAdmin(email){
+  if(!isManager()) return;
+  if(!confirm('Revoke Manager access for '+email+'?')) return;
+  var da=lsGet('dynamic_admins')||[];
+  da=da.filter(function(a){ return String(a.email||'').toLowerCase()!==String(email||'').toLowerCase(); });
+  lsSet('dynamic_admins', da);
+  showToast('Manager access revoked','info');
+  renderAccessTable();
+}
 function filterAccessEmployees(){
   var q=(document.getElementById('acc-emp-search')&&document.getElementById('acc-emp-search').value||'').trim().toLowerCase();
   var ml=document.getElementById('emp-manage-list');
@@ -2177,14 +2292,24 @@ function renderAccessTable() {
   var al=document.getElementById('admin-list');
   if(al) {
     al.innerHTML='';
-    for(var ai=0;ai<ADMINS.length;ai++) {
-      var isMe=ADMINS[ai].email.toLowerCase()===cu.email.toLowerCase();
-      var d=document.createElement('div');
-      d.style.cssText='display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px solid '+(isMe?'var(--accent)':'var(--border)')+';border-radius:12px;padding:10px 14px;';
-      d.innerHTML='<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:12px;font-weight:700;">'+initials(ADMINS[ai].name)+'</div>'
-        +'<div><div style="font-size:13px;font-weight:600;">'+ADMINS[ai].name+(isMe?' <span style="font-size:10px;background:rgba(124,111,255,0.2);color:var(--accent);border-radius:20px;padding:1px 6px;">You</span>':'')+'</div>'
-        +'<div style="font-size:11px;color:var(--muted);">'+ADMINS[ai].email+'</div></div>';
-      al.appendChild(d);
+    var admins_=allAdmins();
+    for(var ai=0;ai<admins_.length;ai++) {
+      (function(A, isDyn){
+        var isMe=String(A.email||'').toLowerCase()===cu.email.toLowerCase();
+        var d=document.createElement('div');
+        d.style.cssText='display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px solid '+(isMe?'var(--accent)':'var(--border)')+';border-radius:12px;padding:10px 14px;';
+        var info=document.createElement('div'); info.style.cssText='display:flex;align-items:center;gap:10px;flex:1;min-width:0;';
+        info.innerHTML='<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:12px;font-weight:700;flex-shrink:0;">'+initials(A.name)+'</div>'
+          +'<div style="min-width:0;"><div style="font-size:13px;font-weight:600;">'+escHtml(A.name)+(isMe?' <span style="font-size:10px;background:rgba(124,111,255,0.2);color:var(--accent);border-radius:20px;padding:1px 6px;">You</span>':'')+(isDyn?' <span style="font-size:10px;background:rgba(56,239,125,0.15);color:var(--accent3);border-radius:20px;padding:1px 6px;">Promoted</span>':'')+'</div>'
+          +'<div style="font-size:11px;color:var(--muted);word-break:break-all;">'+escHtml(A.email)+'</div></div>';
+        d.appendChild(info);
+        if(isDyn){
+          var rb=document.createElement('button'); rb.className='rbtn'; rb.textContent='Revoke'; rb.style.flexShrink='0';
+          rb.onclick=(function(em){ return function(){ revokeAdmin(em); }; })(A.email);
+          d.appendChild(rb);
+        }
+        al.appendChild(d);
+      })(admins_[ai], ai>=ADMINS.length);
     }
   }
   var eml=document.getElementById('emp-manage-list');
@@ -2198,7 +2323,11 @@ function renderAccessTable() {
         var left=document.createElement('div'); left.style.cssText='display:flex;align-items:center;gap:10px;';
         left.innerHTML='<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:Syne,sans-serif;flex-shrink:0;">'+initials(emp)+'</div>'
           +'<div><div style="font-size:13px;font-weight:500;">'+emp+'</div><div style="font-size:11px;color:var(--muted);">#'+String(idx+1).padStart(2,'0')+'</div></div>';
-        var actions=document.createElement('div'); actions.style.cssText='display:flex;gap:6px;flex-shrink:0;';
+        var actions=document.createElement('div'); actions.style.cssText='display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;';
+        var proBtn=document.createElement('button');
+        proBtn.textContent='⬆ Promote';
+        proBtn.style.cssText='background:rgba(255,201,74,0.14);border:1px solid rgba(255,201,74,0.35);color:var(--accent4);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;';
+        proBtn.onclick=(function(e){ return function(){ openPromote(e); }; })(emp);
         var renBtn=document.createElement('button');
         renBtn.textContent='✏️ Rename';
         renBtn.style.cssText='background:rgba(124,111,255,0.16);border:1px solid rgba(124,111,255,0.3);color:var(--accent);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;';
@@ -2207,7 +2336,7 @@ function renderAccessTable() {
         btn.textContent='🗑 Remove';
         btn.style.cssText='background:rgba(255,77,109,0.12);border:1px solid rgba(255,77,109,0.25);color:var(--danger);border-radius:7px;font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;white-space:nowrap;';
         btn.onclick=(function(e){ return function(){ deleteEmployee(e); }; })(emp);
-        actions.appendChild(renBtn); actions.appendChild(btn);
+        actions.appendChild(proBtn); actions.appendChild(renBtn); actions.appendChild(btn);
         d.appendChild(left); d.appendChild(actions); eml.appendChild(d);
       })(EMPS[i],i);
     }
@@ -2262,7 +2391,7 @@ function assignEmp(emp,idx) {
   if(!email) { showToast('Enter an email address','error'); return; }
   if(!email.includes('@')) { showToast('Enter a valid email','error'); return; }
   if(!pass) { showToast('Enter a password for '+emp,'error'); return; }
-  var adminEmails=ADMINS.map(function(a){return a.email.toLowerCase();});
+  var adminEmails=allAdmins().map(function(a){return String(a.email||'').toLowerCase();});
   if(adminEmails.indexOf(email)!==-1) { showToast('Cannot use an admin email for an employee','error'); return; }
   var map=getMap(), keys=Object.keys(map);
   for(var i=0;i<keys.length;i++){
@@ -2481,7 +2610,7 @@ function applyCredentialCSV() {
 function processCredentialRows(dataRows) {
   EMPS=getEmps();
   var map=getMap();
-  var adminEmails=ADMINS.map(function(a){ return a.email.toLowerCase(); });
+  var adminEmails=allAdmins().map(function(a){ return String(a.email||'').toLowerCase(); });
   var applied=[], created=[], skipped=[];
 
   function empByEmail(email) {
