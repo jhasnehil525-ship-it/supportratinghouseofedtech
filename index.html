@@ -827,6 +827,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
           <input type="text" id="new-emp-name" placeholder="Enter employee full name..." style="flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
           <button onclick="addEmployee()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));border:none;border-radius:10px;color:#080810;font-family:Syne,sans-serif;font-size:14px;font-weight:700;padding:11px 22px;cursor:pointer;white-space:nowrap;">+ Add Employee</button>
         </div>
+        <input type="text" id="acc-emp-search" placeholder="🔍 Search employee by name…" oninput="filterAccessEmployees()" style="width:100%;max-width:440px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;outline:none;margin-bottom:12px;">
         <div id="emp-manage-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;"></div>
       </div>
       <div class="asec">
@@ -1524,6 +1525,30 @@ function showLoginError(msg) {
 }
 
 // Receives the Google ID token, verifies the email, maps it to a role.
+// Resolve a company email to an employee by name — lets @houseofedtech.in
+// accounts sign in even before a manager has explicitly assigned their email.
+function deriveNameFromEmail(email){
+  var local = String(email||'').split('@')[0].toLowerCase();
+  return local.replace(/[._]+/g,' ').replace(/\b(ost|hoet)\b/g,' ').replace(/\s+/g,' ').trim();
+}
+function matchEmployeeByEmail(email){
+  ensureTeamRosters();
+  var derived = deriveNameFromEmail(email);
+  var dtok = derived.split(' ').filter(Boolean);
+  if(!dtok.length) return null;
+  var all=[], seen={};
+  for(var t=0;t<TEAMS.length;t++){ var list=lsGet('employee_list_'+TEAMS[t].id)||[]; for(var i=0;i<list.length;i++){ var k=list[i].toLowerCase(); if(!seen[k]){ seen[k]=1; all.push(list[i]); } } }
+  var exact=[], subset=[];
+  for(var j=0;j<all.length;j++){
+    var en=vnorm(all[j]); var etok=en.split(' ').filter(Boolean);
+    if(en===derived){ exact.push(all[j]); }
+    else if(etok.length && (vSubset(etok,dtok)||vSubset(dtok,etok))){ subset.push(all[j]); }
+  }
+  if(exact.length===1) return exact[0];
+  if(exact.length>1) return null;      // ambiguous — don't guess (privacy)
+  if(subset.length===1) return subset[0];
+  return null;                          // 0 or ambiguous
+}
 function handleGoogleCredential(response) {
   var payload = response && response.credential ? decodeJwt(response.credential) : null;
   if(!payload || !payload.email) { showLoginError('Could not read your Google account. Try again.'); return; }
@@ -1544,6 +1569,19 @@ function handleGoogleCredential(response) {
     var e = (typeof rec==='string') ? rec : (rec && rec.email ? rec.email : '');
     if(e.toLowerCase().trim() === email) {
       cu = { email:email, role:(teamOfEmployee(keys[i])==='lead'?'lead':'viewer'), empName:keys[i] };
+      startApp(); return;
+    }
+  }
+  // Auto-authorize a company account by matching its email to an employee name.
+  if(email.indexOf('@houseofedtech.in') !== -1){
+    var autoName = matchEmployeeByEmail(email);
+    if(autoName){
+      var amap = getMap();
+      var cur = amap[autoName];
+      var keepPass = (cur && typeof cur==='object' && cur.pass) ? cur.pass : EP;
+      amap[autoName] = { email:email, pass:keepPass };
+      setMap(amap);
+      cu = { email:email, role:(teamOfEmployee(autoName)==='lead'?'lead':'viewer'), empName:autoName };
       startApp(); return;
     }
   }
@@ -2107,6 +2145,13 @@ function deleteEmployee(emp) {
   showToast(emp+' removed','info'); renderAccessTable();
 }
 
+function filterAccessEmployees(){
+  var q=(document.getElementById('acc-emp-search')&&document.getElementById('acc-emp-search').value||'').trim().toLowerCase();
+  var ml=document.getElementById('emp-manage-list');
+  if(ml){ for(var i=0;i<ml.children.length;i++){ var r=ml.children[i]; var nm=(r.getAttribute('data-name')||'').toLowerCase(); r.style.display=(!q||nm.indexOf(q)!==-1)?'':'none'; } }
+  var tb=document.getElementById('atbody');
+  if(tb){ for(var j=0;j<tb.children.length;j++){ var tr=tb.children[j]; var nm2=(tr.getAttribute('data-name')||'').toLowerCase(); tr.style.display=(!q||nm2.indexOf(q)!==-1)?'':'none'; } }
+}
 function renderAccessTable() {
   EMPS=getEmps();
   var al=document.getElementById('admin-list');
@@ -2128,6 +2173,7 @@ function renderAccessTable() {
     for(var i=0;i<EMPS.length;i++) {
       (function(emp,idx){
         var d=document.createElement('div');
+        d.setAttribute('data-name', emp);
         d.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;';
         var left=document.createElement('div'); left.style.cssText='display:flex;align-items:center;gap:10px;';
         left.innerHTML='<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:Syne,sans-serif;flex-shrink:0;">'+initials(emp)+'</div>'
@@ -2155,6 +2201,7 @@ function renderAccessTable() {
       var pass=rec&&typeof rec==='object'?(rec.pass||''):'';
       var has=!!email;
       var tr=document.createElement('tr');
+      tr.setAttribute('data-name', emp);
       var td0=document.createElement('td'); td0.style.color='var(--muted)'; td0.textContent=idx+1;
       var td1=document.createElement('td');
       td1.innerHTML='<div style="display:flex;align-items:center;gap:9px;"><div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">'+initials(emp)+'</div><span style="font-weight:500;">'+emp+'</span></div>';
@@ -2183,6 +2230,7 @@ function renderAccessTable() {
       tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tb.appendChild(tr);
     })(EMPS[i],i);
   }
+  filterAccessEmployees();
   renderCriteriaEditor();
   renderKPIEditor();
 }
