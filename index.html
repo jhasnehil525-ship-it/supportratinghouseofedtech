@@ -777,6 +777,17 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       </div>
 
       <!-- KPI criteria editor -->
+      <!-- Team Lead sign-in access (by email) -->
+      <div class="asec" id="leademail-sec" style="margin-bottom:20px;">
+        <h3>Team Lead Sign-in Access</h3>
+        <p>Emails added here <strong>always sign in as a Team Lead</strong> (can rate Support &amp; Quality), no matter how their name is spelled in the roster. Use this to fix a team lead who is stuck on the employee view — just add their exact company email.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+          <input type="email" id="lead-email-input" placeholder="teamlead@houseofedtech.in" style="flex:1;min-width:220px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
+          <button class="abtn" type="button" onclick="addLeadEmail()" style="padding:11px 22px;">+ Make Team Lead</button>
+        </div>
+        <div id="lead-email-list" style="display:flex;flex-direction:column;gap:8px;max-width:560px;"></div>
+      </div>
+
       <!-- Rating criteria editor -->
       <div class="asec" id="criteria-manage-sec" style="margin-bottom:20px;">
         <h3 id="criteria-manage-title">Manage Rating Criteria</h3>
@@ -824,7 +835,8 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         <h3>Manage Employees</h3>
         <p>Add new employees to the team or remove existing ones.</p>
         <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
-          <input type="text" id="new-emp-name" placeholder="Enter employee full name..." style="flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
+          <input type="text" id="new-emp-name" placeholder="Enter employee full name..." style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
+          <input type="email" id="new-emp-email" placeholder="Company email (required)" style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;outline:none;">
           <button onclick="addEmployee()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));border:none;border-radius:10px;color:#080810;font-family:Syne,sans-serif;font-size:14px;font-weight:700;padding:11px 22px;cursor:pointer;white-space:nowrap;">+ Add Employee</button>
         </div>
         <input type="text" id="acc-emp-search" placeholder="🔍 Search employee by name…" oninput="filterAccessEmployees()" style="width:100%;max-width:440px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;outline:none;margin-bottom:12px;">
@@ -1443,6 +1455,15 @@ function isViewer(){ return cu && cu.role==='viewer'; }
 function accessibleTeams(){ return (cu && cu.role==='lead') ? ['support','quality'] : ['support','quality','lead','sme']; }
 // Managers = the built-in admins PLUS anyone promoted to Manager (stored in the DB).
 function allAdmins(){ var da = lsGet('dynamic_admins') || []; return ADMINS.concat(da); }
+// A person signs in as a Team Lead if their email is on the manager-managed
+// lead-emails allowlist OR their resolved name is in the Team Lead roster.
+// The email path is immune to name-spelling mismatches.
+function roleForLogin(email, name){
+  var le = lsGet('lead_emails') || [];
+  var lo = String(email||'').toLowerCase();
+  for(var i=0;i<le.length;i++){ if(String(le[i]||'').toLowerCase()===lo) return 'lead'; }
+  return teamOfEmployee(name)==='lead' ? 'lead' : 'viewer';
+}
 
 // ── KPI Functions ─────────────────────────────────────────────
 function toggleKPI() {
@@ -1538,7 +1559,7 @@ function doLogin() {
     if(typeof rec==='string') { empEmail=rec.toLowerCase().trim(); empPass=EP; }
     else if(rec&&typeof rec==='object') { empEmail=(rec.email||'').toLowerCase().trim(); empPass=(rec.pass||'').trim(); }
     if(empEmail && empEmail===email && empPass===pass) {
-      cu = { email:email, role:(teamOfEmployee(n)==='lead'?'lead':'viewer'), empName:n };
+      cu = { email:email, role:roleForLogin(email, n), empName:n };
       startApp(); return;
     }
   }
@@ -1632,7 +1653,7 @@ function handleGoogleCredential(response) {
     var rec = map[keys[i]];
     var e = (typeof rec==='string') ? rec : (rec && rec.email ? rec.email : '');
     if(e.toLowerCase().trim() === email) {
-      cu = { email:email, role:(teamOfEmployee(keys[i])==='lead'?'lead':'viewer'), empName:keys[i] };
+      cu = { email:email, role:roleForLogin(email, keys[i]), empName:keys[i] };
       startApp(); return;
     }
   }
@@ -1645,7 +1666,7 @@ function handleGoogleCredential(response) {
       var keepPass = (cur && typeof cur==='object' && cur.pass) ? cur.pass : EP;
       amap[autoName] = { email:email, pass:keepPass };
       setMap(amap);
-      cu = { email:email, role:(teamOfEmployee(autoName)==='lead'?'lead':'viewer'), empName:autoName };
+      cu = { email:email, role:roleForLogin(email, autoName), empName:autoName };
       startApp(); return;
     }
   }
@@ -2230,16 +2251,23 @@ function renderMyRatings() {
 // ── Access Management ─────────────────────────────────────────
 function addEmployee() {
   var inp=document.getElementById('new-emp-name');
+  var einp=document.getElementById('new-emp-email');
   var name=inp.value.trim();
+  var email=(einp?einp.value:'').trim().toLowerCase();
   if(!name) { showToast('Please enter an employee name','error'); return; }
+  if(!email || email.indexOf('@')===-1) { showToast('A company email is required to add an employee','error'); return; }
   var list=getEmps();
   for(var i=0;i<list.length;i++) { if(list[i].toLowerCase()===name.toLowerCase()) { showToast(name+' already exists','error'); return; } }
+  var map=getMap(), keys=Object.keys(map);
+  for(var j=0;j<keys.length;j++){ var rec=map[keys[j]]; var e=(typeof rec==='string'?rec:(rec&&rec.email?rec.email:'')); if(e && e.toLowerCase()===email){ showToast('That email is already assigned to '+keys[j],'error'); return; } }
   list.push(name);
   saveEmps(list);
   EMPS=list;
+  map[name]={ email:email, pass:EP };
+  setMap(map);
   syncAddAgent(name);   // add this agent as a new column in the salary sheet
-  inp.value='';
-  showToast(name+' added ✓','success');
+  inp.value=''; if(einp) einp.value='';
+  showToast(name+' added with login ✓','success');
   renderAccessTable();
 }
 
@@ -2309,7 +2337,14 @@ function doPromote(name, target, label){
   if(!isManager()) return;
   if(!confirm('Promote '+name+' to '+label+'?'+(target==='manager'?'\n\nThey will immediately get full Manager (admin) access.':''))) return;
   if(target==='manager'){ if(!promoteToManager(name)) return; }
-  else { moveToTeam(name, target); }
+  else {
+    moveToTeam(name, target);
+    if(target==='lead'){
+      var mp=getMap(), rc=mp[name];
+      var em=rc ? (typeof rc==='string'?rc:(rc.email||'')) : '';
+      if(em){ var le=lsGet('lead_emails')||[]; if(le.map(function(e){return String(e).toLowerCase();}).indexOf(em.toLowerCase())===-1){ le.push(em); lsSet('lead_emails', le); } }
+    }
+  }
   EMPS=getEmps();
   closePromote();
   showToast(name+' promoted to '+label+' ✓','success');
@@ -2424,6 +2459,7 @@ function renderAccessTable() {
     })(EMPS[i],i);
   }
   filterAccessEmployees();
+  renderLeadEmails();
   renderCriteriaEditor();
   renderKPIEditor();
 }
@@ -2497,6 +2533,42 @@ function syncRenameAgent(oldName, newName) {
 }
 
 // ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
+// ── Team Lead sign-in access (email allowlist) ────────────────
+function renderLeadEmails(){
+  var box=document.getElementById('lead-email-list'); if(!box) return; box.innerHTML='';
+  var le=lsGet('lead_emails')||[];
+  if(!le.length){ box.innerHTML='<div style="font-size:12px;color:var(--muted);">No team-lead emails added yet.</div>'; return; }
+  for(var i=0;i<le.length;i++){
+    (function(em){
+      var row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 14px;';
+      row.innerHTML='<span style="font-size:13px;word-break:break-all;">📧 '+escHtml(em)+'</span>';
+      var rb=document.createElement('button'); rb.className='rbtn'; rb.textContent='Remove'; rb.style.flexShrink='0';
+      rb.onclick=function(){ removeLeadEmail(em); };
+      row.appendChild(rb); box.appendChild(row);
+    })(le[i]);
+  }
+}
+function addLeadEmail(){
+  if(!isManager()) return;
+  var inp=document.getElementById('lead-email-input'); if(!inp) return;
+  var em=(inp.value||'').trim().toLowerCase();
+  if(!em || em.indexOf('@')===-1){ showToast('Enter a valid email','error'); return; }
+  var le=lsGet('lead_emails')||[];
+  if(le.map(function(e){return String(e).toLowerCase();}).indexOf(em)!==-1){ showToast('Already a Team Lead sign-in','info'); return; }
+  le.push(em); lsSet('lead_emails', le);
+  inp.value='';
+  showToast('Added as Team Lead sign-in ✓','success');
+  renderLeadEmails();
+}
+function removeLeadEmail(em){
+  if(!isManager()) return;
+  var le=lsGet('lead_emails')||[];
+  le=le.filter(function(e){ return String(e).toLowerCase()!==String(em).toLowerCase(); });
+  lsSet('lead_emails', le);
+  showToast('Removed','info');
+  renderLeadEmails();
+}
 // ── Rating criteria editor (per-team) ─────────────────────────
 function renderCriteriaEditor() {
   var ttl=document.getElementById('criteria-manage-title'); if(ttl && curTeam) ttl.textContent='Manage Rating Criteria — '+teamName();
