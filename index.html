@@ -1789,6 +1789,27 @@ function renderTeamCards() {
       g.appendChild(d);
     })(TEAMS[i]);
   }
+  // Team leads are ALSO rated by managers — give them their own ratings view here.
+  if(cu && cu.role==='lead'){
+    var md=document.createElement('div'); md.className='mbtn';
+    md.style.borderColor='rgba(56,239,125,0.45)';
+    md.innerHTML='<div class="mn">⭐ My Ratings</div><div class="my">See your own performance</div><div class="mc">View →</div>';
+    md.onclick=function(){ enterMyRatingsMode(); };
+    g.appendChild(md);
+  }
+}
+function enterMyRatingsMode(){
+  if(!cu) return;
+  curTeam = teamOfEmployee(cu.empName);
+  loadKPIDefs(); loadCriteria();
+  var secs=['ratings-sec','graphs-sec','rankings-sec','toppers-sec','export-sec','access-sec'];
+  for(var i=0;i<secs.length;i++){ var el=document.getElementById(secs[i]); if(el) el.style.display=(secs[i]==='ratings-sec')?'block':'none'; }
+  var mt=document.getElementById('htabs-manager'); if(mt) mt.style.display='none';
+  var tc=document.getElementById('team-chip'); if(tc) tc.style.display='flex';
+  var cn=document.getElementById('team-chip-name'); if(cn) cn.textContent='Switch view';
+  cMonth=null; cWeek=null; cEmp=null;
+  renderMyRatings(); showPage('pg-myratings');
+  document.getElementById('bc').innerHTML='<span onclick="showTeamSelect()">Choose view</span><span class="sep"> › </span><span class="cur">My Ratings</span>';
 }
 function selectTeam(id) {
   curTeam=id; EMPS=getEmps(); loadKPIDefs(); loadCriteria();
