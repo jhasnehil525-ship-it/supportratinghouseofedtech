@@ -777,6 +777,22 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
       </div>
 
       <!-- KPI criteria editor -->
+      <!-- Backup & Restore -->
+      <div class="asec" id="backup-sec" style="margin-bottom:20px;border-color:rgba(56,239,125,0.35);">
+        <h3>💾 Backup &amp; Restore</h3>
+        <p>Download a full JSON snapshot of <strong>everything</strong> — all ratings, rosters, logins, criteria and KPI settings. Keep a copy before any risky change. Restore puts a snapshot back into Google Sheets.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button class="abtn" type="button" onclick="downloadBackup()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;padding:11px 22px;">⬇ Download Backup (JSON)</button>
+          <label class="csv-drop" id="restore-drop" style="min-width:200px;">
+            <input type="file" id="restore-file" accept=".json,application/json" style="display:none;">
+            <span id="restore-file-label">📄 Choose backup file…</span>
+          </label>
+          <button class="abtn" type="button" onclick="applyRestore()" style="padding:11px 22px;background:rgba(255,201,74,0.2);color:var(--accent4);border:1px solid rgba(255,201,74,0.4);">⬆ Restore from Backup</button>
+        </div>
+        <div id="restore-result" style="display:none;margin-top:14px;font-size:13px;"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;">Restore only adds or updates keys from the file — it never deletes anything that is already in the sheet. Employee photos are stored locally per browser and are included in the file but restored only on this device.</div>
+      </div>
+
       <!-- Team Lead sign-in access (by email) -->
       <div class="asec" id="leademail-sec" style="margin-bottom:20px;">
         <h3>Team Lead Sign-in Access</h3>
@@ -1121,6 +1137,9 @@ var GOOGLE_CLIENT_ID = '297117627370-cv8d7un8jmalmk7m31lqmn3qp6j4ohtl.apps.googl
 var DB = {};
 var DB_LOADED = false;
 var GAS_ENABLED = false;
+// TRUE only when this session actually loaded live data from Google Sheets.
+// If false, we are on stale cached data and MUST NOT write lists back to the sheet.
+var DB_FRESH = false;
 
 function isGASConfigured() {
   return GAS_URL && GAS_URL !== 'YOUR_APPS_SCRIPT_URL_HERE' && GAS_URL.indexOf('script.google.com') !== -1;
@@ -1141,12 +1160,12 @@ async function loadAllData() {
     var json = await res.json();
     DB = (json && json.ok && json.data) ? json.data : {};
     Object.keys(DB).forEach(function(k) { try { localStorage.setItem(k, JSON.stringify(DB[k])); } catch(e) {} });
-    DB_LOADED = true;
+    DB_LOADED = true; DB_FRESH = true;
     setSyncStatus('synced');
     setLoadingMsg('Loaded successfully ✓');
   } catch (err) {
     console.warn('[GAS] Load failed, falling back to localStorage:', err);
-    DB_LOADED = true;
+    DB_LOADED = true; DB_FRESH = false;   // stale — writes are blocked until a successful refresh
     setSyncStatus('error');
     setLoadingMsg('Could not reach Google Sheets — using cached data');
     await new Promise(function(r){ setTimeout(r, 1200); });
@@ -1161,7 +1180,7 @@ async function refreshData() {
     var res = await fetch(GAS_URL + '?action=getAll', { method:'GET', redirect:'follow', cache:'no-cache' });
     var json = await res.json();
     if (json && json.ok && json.data) {
-      DB = json.data;
+      DB = json.data; DB_FRESH = true;
       Object.keys(DB).forEach(function(k){ try { localStorage.setItem(k, JSON.stringify(DB[k])); } catch(e){} });
       setSyncStatus('synced');
       showToast('Refreshed from Google Sheets ✓','success');
@@ -1266,6 +1285,7 @@ function ensureTeamRosters() {
   }
   ensureLeadRoster();
   ensureRosterUpdates();
+  ensureRosterUpdatesV3();
 }
 // One-time setup of the Team Lead roster: seed it, pull those names out of the
 // other teams (they were promoted), and assign their logins (Google sign-in
@@ -1309,16 +1329,53 @@ function ensureRosterUpdates() {
   });
   lsSet('roster_v2_done', 1);
 }
+// One-time roster update (v3): create Team Lead for Quality and move Sharique in.
+function ensureRosterUpdatesV3() {
+  if (lsGet('roster_v3_done')) return;
+  var ql = lsGet('employee_list_qlead') || [];
+  QLEAD_SEED.forEach(function(n){ if(!ql.some(function(x){ return normTok(x)===normTok(n); })) ql.push(n); });
+  lsSet('employee_list_qlead', ql);
+  ['support','quality'].forEach(function(tid){
+    var key='employee_list_'+tid, list=lsGet(key);
+    if(list && list.length){
+      var f=list.filter(function(nm){ return !QLEAD_SEED.some(function(m){ return normTok(m)===normTok(nm); }); });
+      if(f.length!==list.length) lsSet(key, f);
+    }
+  });
+  var map=getMap();
+  for(var i=0;i<QLEAD_LOGINS.length;i++){
+    var L=QLEAD_LOGINS[i], cur=map[L.name];
+    var hasEmail = cur && (typeof cur==='string' ? cur : cur.email);
+    if(!hasEmail) map[L.name]={ email:L.email, pass:EP };
+  }
+  setMap(map);
+  var le = lsGet('lead_emails') || [];
+  QLEAD_LOGINS.forEach(function(L){ if(le.map(function(e){return String(e).toLowerCase();}).indexOf(L.email.toLowerCase())===-1) le.push(L.email); });
+  lsSet('lead_emails', le);
+  lsSet('roster_v3_done', 1);
+}
 function teamOfEmployee(name) {
   ensureTeamRosters();
   var inTeam=function(tid){ return (lsGet('employee_list_'+tid)||[]).some(function(x){ return normTok(x)===normTok(name); }); };
   if (inTeam('lead')) return 'lead';
+  if (inTeam('qlead')) return 'qlead';
   if (inTeam('sme')) return 'sme';
   if (inTeam('quality')) return 'quality';
   return 'support';
 }
 function getEmps()  { ensureTeamRosters(); return lsGet(teamKey()) || []; }
-function saveEmps(list) { lsSet(teamKey(), list); }
+function saveEmps(list) {
+  // Guard: never let a stale/short cached list overwrite a good roster in the sheet.
+  var cur = lsGet(teamKey()) || [];
+  if (cur.length && list.length < cur.length - 1) {
+    if (!confirm('This would reduce '+teamName()+' from '+cur.length+' to '+list.length+' employees.\n\nThat usually means the app is working from old cached data. Continue anyway?')) {
+      showToast('Roster change cancelled — refresh and try again','error');
+      return;
+    }
+    audit('ROSTER_SHRINK', teamName(), cur.length+' -> '+list.length);
+  }
+  lsSet(teamKey(), list);
+}
 function getRating(mo,w,e) { return lsGet('r26_'+mo+'_w'+w+'_'+e); }
 function setRating(mo,w,e,d) { lsSet('r26_'+mo+'_w'+w+'_'+e, d); }
 function cntRatings(mo,w) { var c=0; for(var i=0;i<EMPS.length;i++) if(getRating(mo,w,EMPS[i])) c++; return c; }
@@ -1343,7 +1400,8 @@ var TEAMS = [
   { id:'support', name:'Support Team' },
   { id:'quality', name:'Quality for Support' },
   { id:'lead',    name:'Team Lead of Support Team' },
-  { id:'sme',     name:'Subject Matter Expert' }
+  { id:'sme',     name:'Subject Matter Expert' },
+  { id:'qlead',   name:'Team Lead for Quality' }
 ];
 // Seed used ONLY on first run to split the existing roster into support/quality.
 var QUALITY_SEED = ['Sandeepan','Asif','Sharique','Hamidul','Laboni','Amit','Sushmita','Liza'];
@@ -1352,6 +1410,9 @@ var LEAD_SEED = ['Mohammad Abul Kalam Azad','Kulsum Sheikh','Soukhin Bhattacherj
 // Later one-time roster update: Apporva & Md.Badruddin -> Team Lead; Anwesa -> Subject Matter Expert.
 var LEAD_EXTRA_SEED = ['Apporva','Md.Badruddin'];
 var SME_SEED = ['Anwesa'];
+// Quality team leads (promoted out of Quality for Support).
+var QLEAD_SEED = ['Sharique'];
+var QLEAD_LOGINS = [ { name:'Sharique', email:'sharique.ahmad@houseofedtech.in' } ];
 var LEAD_LOGINS = [
   { name:'Mohammad Abul Kalam Azad', email:'abul.azad.ost@houseofedtech.in' },
   { name:'Kulsum Sheikh',            email:'kulsum.sheikh.ost@houseofedtech.in' },
@@ -1448,11 +1509,43 @@ var EP = atob('ZW1wbG95ZWUxMjM=');   // default fallback password "employee123"
 
 var cu = null, cMonth = null, cWeek = null, cEmp = null, viewOnly = false, curTeam = null;
 var impersonating = false, realCU = null;
+var SUPERADMIN = 'snehil@houseofedtech.in';
+function isSuper(){ return cu && String(cu.email||'').toLowerCase()===SUPERADMIN; }
+// Block any structural write while we are on stale (offline) data — this is what
+// used to silently overwrite the roster with an old cached copy.
+function canWrite(actionLabel){
+  if(GAS_ENABLED && !DB_FRESH){
+    showToast('Not synced with Google Sheets — click the sync chip to refresh before '+(actionLabel||'making changes'),'error');
+    return false;
+  }
+  return true;
+}
+// Full audit trail -> "Audit Log" tab in the data sheet (superadmin visibility).
+function audit(action, target, details){
+  if(!GAS_ENABLED) return;
+  var who = cu ? ((cu.adminName||cu.empName||'')+' <'+(cu.email||'')+'>') : 'unknown';
+  try {
+    fetch(GAS_URL, {
+      method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
+      body: JSON.stringify({
+        action:'logAudit', at:new Date().toISOString(), who:who,
+        role:(cu?cu.role:''), team:(curTeam?teamName():''),
+        event:action||'', target:target||'', details:(details==null?'':String(details))
+      })
+    }).catch(function(){});
+  } catch(e) {}
+}
 function isManager(){ return cu && cu.role==='manager'; }
 function isRater(){ return cu && (cu.role==='manager' || cu.role==='lead'); }
 function isViewer(){ return cu && cu.role==='viewer'; }
 // Team Leads can rate the two employee teams but not the Team Lead or SME teams.
-function accessibleTeams(){ return (cu && cu.role==='lead') ? ['support','quality'] : ['support','quality','lead','sme']; }
+function accessibleTeams(){
+  if(cu && cu.role==='lead'){
+    // A Quality team lead rates only the Quality team; a Support team lead rates Support + Quality.
+    return (teamOfEmployee(cu.empName)==='qlead') ? ['quality'] : ['support','quality'];
+  }
+  return ['support','quality','lead','sme','qlead'];
+}
 // Managers = the built-in admins PLUS anyone promoted to Manager (stored in the DB).
 function allAdmins(){ var da = lsGet('dynamic_admins') || []; return ADMINS.concat(da); }
 // A person signs in as a Team Lead if their email is on the manager-managed
@@ -1462,7 +1555,8 @@ function roleForLogin(email, name){
   var le = lsGet('lead_emails') || [];
   var lo = String(email||'').toLowerCase();
   for(var i=0;i<le.length;i++){ if(String(le[i]||'').toLowerCase()===lo) return 'lead'; }
-  return teamOfEmployee(name)==='lead' ? 'lead' : 'viewer';
+  var t = teamOfEmployee(name);
+  return (t==='lead' || t==='qlead') ? 'lead' : 'viewer';
 }
 // Is this name in ANY team's roster (i.e. a real, visible person vs. a leftover login-map record)?
 function isInAnyTeam(name){
@@ -1709,6 +1803,7 @@ function initGoogleSignIn() {
 }
 
 function startApp() {
+  if(!startApp._logged){ startApp._logged=1; audit('LOGIN', (cu?cu.empName||cu.adminName||cu.email:''), (cu?cu.role:'')); }
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   document.getElementById('access-sec').style.display='none';
@@ -1775,6 +1870,7 @@ function renderViewAsList(){
 }
 function viewAsAgent(name){
   if(!cu || cu.role!=='manager') return;
+  audit('VIEW_AS', name, 'manager viewed as agent');
   realCU = cu; impersonating = true;
   var map=getMap(), rec=map[name];
   var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
@@ -1858,7 +1954,7 @@ function doLogout() {
   document.getElementById('lerr').style.display='none';
   var vfx=document.getElementById('voice-fab'); if(vfx) vfx.style.display='none';
   voiceSetListening(false);
-  impersonating=false; realCU=null;
+  impersonating=false; realCU=null; startApp._logged=0;
   var ib=document.getElementById('impersonation-banner'); if(ib) ib.style.display='none';
   var vab=document.getElementById('viewas-btn'); if(vab) vab.style.display='none';
 }
@@ -2146,6 +2242,7 @@ function saveRating() {
   var d={ criteria:{}, avg:calcAvg(), comment:document.getElementById('cfield').value, ccomments:curComments, kpi:curKPI, savedAt:new Date().toISOString(), savedBy:cu.adminName||cu.email, history:history };
   for(var i=0;i<CRITERIA.length;i++) d.criteria[CRITERIA[i]]=curRatings[CRITERIA[i]]||0;
   setRating(cMonth,cWeek,cEmp,d);
+  audit('RATING_SAVED', cEmp, MONTHS[cMonth]+' W'+cWeek+' avg '+d.avg+(existing?' (edited)':' (new)'));
   syncSalarySheet(cEmp, cMonth, cWeek, d.avg, false);  // mirror avg into salary sheet (saving no longer emails anyone)
   showToast('Rating saved by '+d.savedBy+' ✓','success');
   setTimeout(function(){ saveBtn.disabled=false; saveBtn.textContent='Save Rating ✓'; goToEmp(); },1000);
@@ -2159,15 +2256,19 @@ function undoRating() {
   var newHistory=existing.history.slice(0,-1);
   var d={ criteria:prev.criteria, avg:prev.avg, comment:prev.comment, ccomments:prev.ccomments||{}, kpi:prev.kpi||{}, savedAt:prev.savedAt, savedBy:prev.savedBy, history:newHistory, undoneBy:cu.adminName||cu.email, undoneAt:new Date().toISOString() };
   setRating(cMonth,cWeek,cEmp,d);
+  audit('RATING_UNDONE', cEmp, MONTHS[cMonth]+' W'+cWeek+' restored to avg '+prev.avg);
   showToast('Rating restored to previous version ↩','info');
   setTimeout(function(){ buildForm(cEmp); },400);
 }
 
 function deleteRating() {
   if(!isRater()) return;
+  if(!isSuper()){ showToast('Only the super admin can delete a rating. Edit and re-save it instead.','error'); return; }
+  if(!canWrite('deleting a rating')) return;
   if(!confirm('Are you sure you want to delete this rating? This cannot be undone.')) return;
   var saved=getRating(cMonth,cWeek,cEmp);
   logDeletion(cEmp, cMonth, cWeek, saved);          // record who deleted it, before it's gone
+  audit('RATING_DELETED', cEmp, MONTHS[cMonth]+' W'+cWeek+' avg '+(saved?saved.avg:'-')+' (rated by '+(saved?saved.savedBy:'-')+')');
   dbDelete('r26_'+cMonth+'_w'+cWeek+'_'+cEmp);
   syncSalarySheet(cEmp, cMonth, cWeek, '', true);   // clear the salary-sheet cell too
   showToast('Rating deleted','info');
@@ -2272,23 +2373,29 @@ function addEmployee() {
   map[name]={ email:email, pass:EP };
   setMap(map);
   syncAddAgent(name);   // add this agent as a new column in the salary sheet
+  audit('EMPLOYEE_CREATED', name, 'team '+teamName()+', email '+email);
   inp.value=''; if(einp) einp.value='';
   showToast(name+' added with login ✓','success');
   renderAccessTable();
 }
 
 function deleteEmployee(emp) {
+  if(!isSuper()){ showToast('Only the super admin can remove an employee. Use Promote to move someone between teams.','error'); return; }
+  if(!canWrite('removing an employee')) return;
   if(!confirm('Delete "'+emp+'" from the employee list?\n\nRatings data will be preserved but they will be removed from all future rating lists and login access will be revoked.')) return;
   var list=getEmps(); list=list.filter(function(e){return e!==emp;}); saveEmps(list); EMPS=list;
   var map=getMap(); if(map[emp]){ delete map[emp]; setMap(map); }
+  audit('EMPLOYEE_DELETED', emp, 'removed from '+teamName());
   showToast(emp+' removed','info'); renderAccessTable();
 }
 
 // ── Promote employee (manager-only) ───────────────────────────
 function promoteTargets(){
-  if(curTeam==='sme') return [{id:'lead',label:'Team Lead'},{id:'manager',label:'Manager'}];
-  if(curTeam==='lead') return [{id:'manager',label:'Manager'}];
-  // support / quality (and fallback)
+  if(curTeam==='sme')   return [{id:'lead',label:'Team Lead'},{id:'manager',label:'Manager'}];
+  if(curTeam==='lead')  return [{id:'manager',label:'Manager'}];
+  if(curTeam==='qlead') return [{id:'manager',label:'Manager'}];
+  if(curTeam==='quality') return [{id:'qlead',label:'Team Lead for Quality'},{id:'lead',label:'Team Lead'},{id:'sme',label:'Subject Matter Expert'},{id:'manager',label:'Manager'}];
+  // support (and fallback)
   return [{id:'lead',label:'Team Lead'},{id:'sme',label:'Subject Matter Expert'},{id:'manager',label:'Manager'}];
 }
 function openPromote(name){
@@ -2345,13 +2452,14 @@ function doPromote(name, target, label){
   if(target==='manager'){ if(!promoteToManager(name)) return; }
   else {
     moveToTeam(name, target);
-    if(target==='lead'){
+    if(target==='lead' || target==='qlead'){
       var mp=getMap(), rc=mp[name];
       var em=rc ? (typeof rc==='string'?rc:(rc.email||'')) : '';
       if(em){ var le=lsGet('lead_emails')||[]; if(le.map(function(e){return String(e).toLowerCase();}).indexOf(em.toLowerCase())===-1){ le.push(em); lsSet('lead_emails', le); } }
     }
   }
   EMPS=getEmps();
+  audit('PROMOTED', name, 'to '+label);
   closePromote();
   showToast(name+' promoted to '+label+' ✓','success');
   renderAccessTable();
@@ -2362,6 +2470,7 @@ function revokeAdmin(email){
   var da=lsGet('dynamic_admins')||[];
   da=da.filter(function(a){ return String(a.email||'').toLowerCase()!==String(email||'').toLowerCase(); });
   lsSet('dynamic_admins', da);
+  audit('MANAGER_REVOKED', email, '');
   showToast('Manager access revoked','info');
   renderAccessTable();
 }
@@ -2490,10 +2599,11 @@ function assignEmp(emp,idx) {
     }
   }
   map[emp]={ email:email, pass:pass }; setMap(map);
+  audit('ACCESS_ASSIGNED', emp, email);
   showToast('Access granted to '+emp+' ✓','success'); renderAccessTable();
 }
 
-function revokeEmp(emp) { var map=getMap(); delete map[emp]; setMap(map); showToast('Access revoked for '+emp,'info'); renderAccessTable(); }
+function revokeEmp(emp) { var map=getMap(); delete map[emp]; setMap(map); audit('ACCESS_REVOKED', emp, ''); showToast('Access revoked for '+emp,'info'); renderAccessTable(); }
 
 function updateEmp(emp,idx) {
   var map=getMap(), rec=map[emp]||{};
@@ -2505,6 +2615,7 @@ function updateEmp(emp,idx) {
   if(!newEmail||!newEmail.includes('@')) { showToast('Invalid email','error'); return; }
   if(!newPass) { showToast('Password cannot be empty','error'); return; }
   map[emp]={ email:newEmail, pass:newPass }; setMap(map);
+  audit('CREDENTIALS_UPDATED', emp, newEmail);
   showToast('Credentials updated for '+emp+' ✓','success'); renderAccessTable();
 }
 
@@ -2533,6 +2644,7 @@ function renameEmployee(oldName) {
   var ph=lsGetLocal('photo_'+oldName); if(ph){ lsSetLocal('photo_'+newName, ph); try{ localStorage.removeItem('photo_'+oldName); }catch(e){} }
   // rename the column in the salary sheet too
   syncRenameAgent(oldName, newName);
+  audit('EMPLOYEE_RENAMED', oldName+' -> '+newName, moved+' ratings migrated');
   showToast('Renamed to “'+newName+'” ✓'+(moved?(' ('+moved+' rating'+(moved===1?'':'s')+' moved)'):''),'success');
   renderAccessTable();
 }
@@ -2567,6 +2679,7 @@ function addLeadEmail(){
   var le=lsGet('lead_emails')||[];
   if(le.map(function(e){return String(e).toLowerCase();}).indexOf(em)!==-1){ showToast('Already a Team Lead sign-in','info'); return; }
   le.push(em); lsSet('lead_emails', le);
+  audit('LEAD_ACCESS_GRANTED', em, '');
   inp.value='';
   showToast('Added as Team Lead sign-in ✓','success');
   renderLeadEmails();
@@ -2576,6 +2689,7 @@ function removeLeadEmail(em){
   var le=lsGet('lead_emails')||[];
   le=le.filter(function(e){ return String(e).toLowerCase()!==String(em).toLowerCase(); });
   lsSet('lead_emails', le);
+  audit('LEAD_ACCESS_REMOVED', em, '');
   showToast('Removed','info');
   renderLeadEmails();
 }
@@ -2610,6 +2724,7 @@ function saveCriteria() {
   }
   if(arr.length<2){ showToast('Add at least 2 criteria','error'); return; }
   CRITERIA=arr; lsSet(criteriaKey(), arr);
+  audit('RATING_CRITERIA_SAVED', teamName(), arr.join(' | '));
   showToast('Rating criteria saved ✓ ('+arr.length+')','success');
   renderCriteriaEditor();
 }
@@ -2666,6 +2781,7 @@ function saveKPIDefs() {
   }
   if(!arr.length){ showToast('Add at least one criterion before saving','error'); return; }
   KPI_DEFS=arr; lsSet(kpiKey(), arr);
+  audit('KPI_CRITERIA_SAVED', teamName(), arr.length+' criteria');
   showToast('KPI criteria saved ✓ ('+arr.length+')','success');
   renderKPIEditor();
 }
@@ -2699,6 +2815,96 @@ function parseCSV(text) {
   return rows.filter(function(r){ return r.some(function(x){ return (x||'').trim()!==''; }); });
 }
 
+// ── Backup & Restore (full JSON snapshot) ─────────────────────
+function collectBackup(){
+  var data = {};
+  Object.keys(DB).forEach(function(k){ data[k] = DB[k]; });
+  // include local-only photos so the file is a complete picture
+  var photos = {};
+  try {
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k && k.indexOf('photo_')===0){ try { photos[k]=JSON.parse(localStorage.getItem(k)); } catch(e){} }
+    }
+  } catch(e) {}
+  return {
+    _meta: {
+      app:'Team Performance Rating (Project 2)',
+      takenAt:new Date().toISOString(),
+      takenBy:(cu?((cu.adminName||cu.empName||'')+' <'+(cu.email||'')+'>'):''),
+      keyCount:Object.keys(data).length,
+      synced:!!DB_FRESH
+    },
+    data: data,
+    photos: photos
+  };
+}
+function downloadBackup(){
+  if(!isManager()) return;
+  if(GAS_ENABLED && !DB_FRESH){
+    if(!confirm('This session could not reach Google Sheets, so the backup would be made from CACHED data and may be out of date.\n\nDownload it anyway?')) return;
+  }
+  var payload=collectBackup();
+  var blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var d=new Date(), pad=function(x){ return (x<10?'0':'')+x; };
+  var stamp=d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'_'+pad(d.getHours())+pad(d.getMinutes());
+  var a=document.createElement('a'); a.href=url; a.download='team_performance_backup_'+stamp+'.json'; a.style.display='none';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  audit('BACKUP_DOWNLOADED','', payload._meta.keyCount+' keys');
+  showToast('Backup downloaded ('+payload._meta.keyCount+' records) ✓','success');
+}
+function applyRestore(){
+  if(!isManager()) return;
+  var input=document.getElementById('restore-file');
+  if(!input||!input.files||!input.files[0]){ showToast('Choose a backup file first','error'); return; }
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var payload;
+    try { payload=JSON.parse(e.target.result); }
+    catch(err){ showToast('That file is not valid JSON','error'); return; }
+    var data = (payload && payload.data) ? payload.data : payload;
+    if(!data || typeof data!=='object' || !Object.keys(data).length){ showToast('No records found in that file','error'); return; }
+    var keys=Object.keys(data);
+    var meta=(payload && payload._meta) ? payload._meta : {};
+    var when=meta.takenAt ? new Date(meta.takenAt).toLocaleString() : 'unknown date';
+    if(!confirm('Restore '+keys.length+' records from the backup taken on '+when+'?\n\nExisting records with the same key will be OVERWRITTEN with the backup version. Nothing else is deleted.')) return;
+    if(prompt('Type RESTORE to confirm.')!=='RESTORE'){ showToast('Restore cancelled','info'); return; }
+    // local photos (this device only)
+    if(payload.photos){ Object.keys(payload.photos).forEach(function(pk){ try { lsSetLocal(pk, payload.photos[pk]); } catch(e2){} }); }
+    // apply in memory + localStorage immediately
+    keys.forEach(function(k){ DB[k]=data[k]; try { localStorage.setItem(k, JSON.stringify(data[k])); } catch(e3){} });
+    var rd=document.getElementById('restore-result');
+    if(rd){ rd.style.display='block'; rd.innerHTML='<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;">⏳ Restoring '+keys.length+' records to Google Sheets…</div>'; }
+    if(!GAS_ENABLED){
+      if(rd) rd.innerHTML='<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;">✓ Restored locally ('+keys.length+' records). Google Sheets is not configured.</div>';
+      EMPS=getEmps(); renderAccessTable(); return;
+    }
+    // push to the sheet in chunks
+    var CHUNK=100, sent=0;
+    (function pushNext(){
+      if(sent>=keys.length){
+        audit('BACKUP_RESTORED','', keys.length+' records from '+when);
+        if(rd) rd.innerHTML='<div style="background:rgba(56,239,125,0.1);border:1px solid rgba(56,239,125,0.3);border-radius:10px;padding:12px;color:var(--accent3);">✓ Restore complete — '+keys.length+' records written. Click the sync chip to reload, then check the data.</div>';
+        showToast('Restore complete ✓','success');
+        EMPS=getEmps(); renderAccessTable();
+        return;
+      }
+      var slice=keys.slice(sent, sent+CHUNK), pairs={};
+      slice.forEach(function(k){ pairs[k]=data[k]; });
+      fetch(GAS_URL, { method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
+        body: JSON.stringify({ action:'restoreAll', pairs:pairs }) }).catch(function(){});
+      sent+=slice.length;
+      if(rd) rd.innerHTML='<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;">⏳ Restoring… '+sent+' / '+keys.length+'</div>';
+      setTimeout(pushNext, 900);
+    })();
+    input.value='';
+    var lab=document.getElementById('restore-file-label'); if(lab) lab.textContent='📄 Choose backup file…';
+    var drop=document.getElementById('restore-drop'); if(drop) drop.classList.remove('has-file');
+  };
+  reader.onerror=function(){ showToast('Could not read that file','error'); };
+  reader.readAsText(input.files[0]);
+}
 function downloadCredTemplate() {
   EMPS=getEmps();
   var a=EMPS[0]||'Employee One', b=EMPS[1]||'Employee Two';
@@ -3459,6 +3665,19 @@ window.onload = async function() {
   // Add-employee on Enter
   var newEmp=document.getElementById('new-emp-name');
   if(newEmp) newEmp.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); addEmployee(); } });
+
+  var restoreFile=document.getElementById('restore-file');
+  if(restoreFile) restoreFile.addEventListener('change', function(){
+    var lab=document.getElementById('restore-file-label');
+    var drop=document.getElementById('restore-drop');
+    if(restoreFile.files && restoreFile.files[0]){
+      if(lab) lab.textContent='📄 '+restoreFile.files[0].name;
+      if(drop) drop.classList.add('has-file');
+    } else {
+      if(lab) lab.textContent='📄 Choose backup file…';
+      if(drop) drop.classList.remove('has-file');
+    }
+  });
 
   // CSV file picker — reflect chosen filename in the drop label
   var csvFile=document.getElementById('csv-file');
