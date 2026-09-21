@@ -1500,6 +1500,7 @@ function loadCriteria(){
 
 // ── Admin (manager) accounts — base64-obfuscated so source isn't plain at a glance ──
 var ADMINS = [
+  { email: atob('c25laGlsQGhvdXNlb2ZlZHRlY2guaW4='), pass: atob('U25laGlsU3VwZXJAMjAyNg=='), name: 'Snehil (Super Admin)' },
   { email: atob('cHJpeWFua2Euc2luZ2hAaG91c2VvZmVkdGVjaC5pbg=='), pass: atob('NWMwcEw3dlA5bFVGSEFGZw=='), name: 'Priyanka Singh' },
   { email: atob('YXJjaGFuYS50cmlwYXRoaUBob3VzZW9mZWR0ZWNoLmlu'), pass: atob('Z0FNWXhuenN3N2pWOGFvNQ=='), name: 'Archana Tripathi' },
   { email: atob('YWJoaXVkYXkuYmFnaGVsQGhvdXNlb2ZlZHRlY2guaW4='), pass: atob('aVlwdmF4UFRPRlhIZXFjZw=='), name: 'Abhiuday Baghel' },
@@ -1552,6 +1553,8 @@ function allAdmins(){ var da = lsGet('dynamic_admins') || []; return ADMINS.conc
 // lead-emails allowlist OR their resolved name is in the Team Lead roster.
 // The email path is immune to name-spelling mismatches.
 function roleForLogin(email, name){
+  // The super admin is always a manager, even if a matching employee record exists.
+  if(String(email||'').toLowerCase()===SUPERADMIN) return 'manager';
   var le = lsGet('lead_emails') || [];
   var lo = String(email||'').toLowerCase();
   for(var i=0;i<le.length;i++){ if(String(le[i]||'').toLowerCase()===lo) return 'lead'; }
