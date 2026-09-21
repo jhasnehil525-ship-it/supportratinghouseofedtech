@@ -1515,6 +1515,10 @@ function isSuper(){ return cu && String(cu.email||'').toLowerCase()===SUPERADMIN
 // Block any structural write while we are on stale (offline) data — this is what
 // used to silently overwrite the roster with an old cached copy.
 function canWrite(actionLabel){
+  if(impersonating){
+    showToast('View-as is read-only — exit view first to make changes','error');
+    return false;
+  }
   if(GAS_ENABLED && !DB_FRESH){
     showToast('Not synced with Google Sheets — click the sync chip to refresh before '+(actionLabel||'making changes'),'error');
     return false;
@@ -1834,16 +1838,32 @@ function startApp() {
 function allAgents(){
   ensureTeamRosters();
   var out=[], seen={};
+  // Managers first (built-in + promoted)
+  var ad=allAdmins();
+  for(var a=0;a<ad.length;a++){
+    var em=String(ad[a].email||'');
+    if(!em) continue;
+    var k='m:'+em.toLowerCase();
+    if(seen[k]) continue; seen[k]=1;
+    out.push({ name:ad[a].name||em, team:'Manager', email:em, role:'manager', adminName:ad[a].name||em, sort:0 });
+  }
+  // Everyone in every team roster, with the role they would actually get
   for(var t=0;t<TEAMS.length;t++){
     var list=lsGet('employee_list_'+TEAMS[t].id)||[];
     for(var i=0;i<list.length;i++){
-      var key=list[i].toLowerCase();
-      if(!seen[key]){ seen[key]=1; out.push({ name:list[i], team:TEAMS[t].name }); }
+      var nm=list[i], key='p:'+nm.toLowerCase();
+      if(seen[key]) continue; seen[key]=1;
+      var rec=getMap()[nm];
+      var mail=rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
+      var r=roleForLogin(mail, nm);
+      out.push({ name:nm, team:TEAMS[t].name, email:mail, role:r,
+                 sort:(r==='manager'?0:(r==='lead'?1:2)) });
     }
   }
-  out.sort(function(a,b){ return a.name.localeCompare(b.name); });
+  out.sort(function(x,y){ return (x.sort-y.sort) || x.name.localeCompare(y.name); });
   return out;
 }
+function roleLabel(r){ return r==='manager'?'Manager':(r==='lead'?'Team Lead':'Employee'); }
 function openViewAsPicker(){
   if(!cu || cu.role!=='manager') return;
   var ov=document.getElementById('viewas-overlay'); if(ov) ov.style.display='flex';
@@ -1856,32 +1876,40 @@ function renderViewAsList(){
   var box=document.getElementById('viewas-list'); if(!box) return;
   var q=(document.getElementById('viewas-search')&&document.getElementById('viewas-search').value||'').trim().toLowerCase();
   var list=allAgents();
-  if(q) list=list.filter(function(a){ return a.name.toLowerCase().indexOf(q)!==-1; });
+  if(q) list=list.filter(function(a){ return a.name.toLowerCase().indexOf(q)!==-1 || String(a.team||'').toLowerCase().indexOf(q)!==-1 || roleLabel(a.role).toLowerCase().indexOf(q)!==-1; });
   box.innerHTML='';
-  if(!list.length){ box.innerHTML='<div class="empty" style="padding:24px;">No agent matches.</div>'; return; }
+  if(!list.length){ box.innerHTML='<div class="empty" style="padding:24px;">Nobody matches.</div>'; return; }
   for(var i=0;i<list.length;i++){
     (function(a){
+      var col = a.role==='manager' ? 'var(--accent)' : (a.role==='lead' ? 'var(--accent4)' : 'var(--accent3)');
       var d=document.createElement('div');
       d.style.cssText='display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;';
       d.onmouseover=function(){ d.style.background='var(--surface2)'; };
       d.onmouseout=function(){ d.style.background='none'; };
-      d.innerHTML='<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:11px;font-weight:700;flex-shrink:0;">'+initials(a.name)+'</div><div style="min-width:0;"><div style="font-size:13px;font-weight:500;">'+escHtml(a.name)+'</div><div style="font-size:11px;color:var(--muted);">'+escHtml(a.team)+'</div></div>';
-      d.onclick=function(){ viewAsAgent(a.name); };
+      d.innerHTML='<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:11px;font-weight:700;flex-shrink:0;">'+initials(a.name)+'</div>'
+        +'<div style="min-width:0;flex:1;"><div style="font-size:13px;font-weight:500;">'+escHtml(a.name)+'</div><div style="font-size:11px;color:var(--muted);">'+escHtml(a.team)+(a.email?' · '+escHtml(a.email):'')+'</div></div>'
+        +'<span style="flex-shrink:0;font-size:10px;font-weight:700;color:'+col+';border:1px solid '+col+';border-radius:20px;padding:2px 8px;">'+roleLabel(a.role)+'</span>';
+      d.onclick=function(){ viewAsAgent(a); };
       box.appendChild(d);
     })(list[i]);
   }
 }
-function viewAsAgent(name){
+function viewAsAgent(p){
   if(!cu || cu.role!=='manager') return;
-  audit('VIEW_AS', name, 'manager viewed as agent');
+  if(typeof p==='string'){   // tolerate an old-style call with just a name
+    var found=null, all=allAgents();
+    for(var i=0;i<all.length;i++) if(all[i].name===p){ found=all[i]; break; }
+    p = found || { name:p, role:'viewer', email:'' };
+  }
+  audit('VIEW_AS', p.name, 'viewed as '+roleLabel(p.role));
   realCU = cu; impersonating = true;
-  var map=getMap(), rec=map[name];
-  var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
-  cu = { email:email, role:'viewer', empName:name };
+  if(p.role==='manager') cu = { email:p.email||'', role:'manager', empName:null, adminName:p.adminName||p.name };
+  else cu = { email:p.email||'', role:p.role||'viewer', empName:p.name };
+  curTeam = null;
   closeViewAsPicker();
   startApp();
   var b=document.getElementById('impersonation-banner'); if(b) b.style.display='flex';
-  var bt=document.getElementById('impersonation-text'); if(bt) bt.textContent='👁 Viewing as '+name;
+  var bt=document.getElementById('impersonation-text'); if(bt) bt.textContent='👁 Viewing as '+p.name+' ('+roleLabel(p.role)+')';
 }
 function exitViewAs(){
   if(!impersonating) return;
@@ -2237,6 +2265,7 @@ function calcAvg() {
 
 function saveRating() {
   if(!isRater()) return;
+  if(!canWrite('saving a rating')) return;
   var saveBtn=document.getElementById('save-btn');
   saveBtn.disabled=true; saveBtn.textContent='💾 Saving...';
   var existing=getRating(cMonth,cWeek,cEmp);
