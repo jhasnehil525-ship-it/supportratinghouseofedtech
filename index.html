@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Team Performance Rating</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -536,6 +539,7 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
     <div class="login-logo">⭐</div>
     <h2>Welcome Back</h2>
     <p>Sign in to access team performance ratings</p>
+    <div style="font-size:10px;color:var(--muted);margin:-22px 0 22px;">Build <span id="app-version">—</span></div>
     <div class="fg">
       <label>Email Address</label>
       <input type="email" id="lemail" placeholder="your@email.com" autocomplete="email">
@@ -1880,6 +1884,16 @@ function initGoogleSignIn() {
 }
 
 function startApp() {
+  // Safety net: if this person is in a Team Lead roster (or on the lead-email list)
+  // but somehow resolved to a plain viewer, correct it instead of locking them out.
+  if(cu && cu.role==='viewer' && cu.empName){
+    var t0=teamOfEmployee(cu.empName);
+    if(t0==='lead' || t0==='qlead'){ cu.role='lead'; }
+    else {
+      var le0=lsGet('lead_emails')||[], lo0=String(cu.email||'').toLowerCase();
+      for(var z=0;z<le0.length;z++){ if(String(le0[z]||'').toLowerCase()===lo0){ cu.role='lead'; break; } }
+    }
+  }
   if(!startApp._logged){ startApp._logged=1; audit('LOGIN', (cu?cu.empName||cu.adminName||cu.email:''), (cu?cu.role:'')); }
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
@@ -3743,6 +3757,9 @@ function voiceToggle(){
 
 // ── Boot ──────────────────────────────────────────────────────
 window.onload = async function() {
+  var APP_VERSION = '2026.09.23-teamlead-fix';
+  var vEl=document.getElementById('app-version'); if(vEl) vEl.textContent=APP_VERSION;
+  try { document.title = 'Team Performance Rating'; } catch(e) {}
   init3DBackground();
   voiceInit();
   var overlay=document.getElementById('loading-overlay');
