@@ -1286,6 +1286,7 @@ function ensureTeamRosters() {
   ensureLeadRoster();
   ensureRosterUpdates();
   ensureRosterUpdatesV3();
+  ensureRosterUpdatesV4();
 }
 // One-time setup of the Team Lead roster: seed it, pull those names out of the
 // other teams (they were promoted), and assign their logins (Google sign-in
@@ -1353,6 +1354,75 @@ function ensureRosterUpdatesV3() {
   QLEAD_LOGINS.forEach(function(L){ if(le.map(function(e){return String(e).toLowerCase();}).indexOf(L.email.toLowerCase())===-1) le.push(L.email); });
   lsSet('lead_emails', le);
   lsSet('roster_v3_done', 1);
+}
+// One-time roster update (v4): merge the duplicate spellings of Appurba into a
+// single record, move her into Team Lead of Support Team, and give her lead sign-in.
+var APPURBA_VARIANTS = ['Appurba','Apporva','Apoorva','Apurba','Appurba Banerjee','Apporva Banerjee'];
+var APPURBA_EMAIL = 'appurba.banerjee.ost@houseofedtech.in';
+function countRatingsFor(name){
+  var c=0;
+  for(var mi=0; mi<MONTHS.length; mi++) for(var w=1; w<=4; w++){
+    var r=lsGet('r26_'+mi+'_w'+w+'_'+name);
+    if(r!==null && r!==undefined) c++;
+  }
+  return c;
+}
+function mergeDuplicatePerson(variants, canonicalPreferred, targetTeam, email){
+  // Find which variants actually exist (in any roster or the login map or as ratings)
+  var present=[], map=getMap();
+  for(var v=0; v<variants.length; v++){
+    var nm=variants[v], found=false;
+    for(var t=0;t<TEAMS.length;t++){
+      var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+      if(list.some(function(x){ return normTok(x)===normTok(nm); })) { found=true; break; }
+    }
+    if(!found && map[nm]!==undefined) found=true;
+    if(!found && countRatingsFor(nm)>0) found=true;
+    if(found && !present.some(function(p){ return normTok(p)===normTok(nm); })) present.push(nm);
+  }
+  if(!present.length) present=[canonicalPreferred];
+  // Canonical = the spelling that already holds the most ratings (keeps history intact)
+  var canonical=present[0], best=-1;
+  for(var i=0;i<present.length;i++){
+    var c=countRatingsFor(present[i]);
+    if(c>best){ best=c; canonical=present[i]; }
+  }
+  // Migrate ratings from the other spellings into the canonical one
+  var moved=0;
+  for(var j=0;j<present.length;j++){
+    var dup=present[j];
+    if(normTok(dup)===normTok(canonical)) continue;
+    for(var mi=0; mi<MONTHS.length; mi++) for(var w=1; w<=4; w++){
+      var dk='r26_'+mi+'_w'+w+'_'+dup, rec=lsGet(dk);
+      if(rec===null || rec===undefined) continue;
+      var ck='r26_'+mi+'_w'+w+'_'+canonical;
+      if(lsGet(ck)===null || lsGet(ck)===undefined){ lsSet(ck, rec); moved++; }
+      dbDelete(dk);
+    }
+    if(map[dup]!==undefined) delete map[dup];
+  }
+  // Remove every variant from every roster, then put the canonical in the target team
+  for(var t2=0;t2<TEAMS.length;t2++){
+    var key='employee_list_'+TEAMS[t2].id, list2=lsGet(key)||[];
+    var f=list2.filter(function(nm2){ return !present.some(function(p){ return normTok(p)===normTok(nm2); }); });
+    if(f.length!==list2.length) lsSet(key, f);
+  }
+  var tkey='employee_list_'+targetTeam, tlist=lsGet(tkey)||[];
+  if(!tlist.some(function(x){ return normTok(x)===normTok(canonical); })){ tlist.push(canonical); lsSet(tkey, tlist); }
+  // Login + lead access
+  if(email){
+    map[canonical]={ email:email, pass:(map[canonical] && typeof map[canonical]==='object' && map[canonical].pass) ? map[canonical].pass : EP };
+    var le=lsGet('lead_emails')||[];
+    if(le.map(function(e){ return String(e).toLowerCase(); }).indexOf(email.toLowerCase())===-1){ le.push(email); lsSet('lead_emails', le); }
+  }
+  setMap(map);
+  return { canonical:canonical, merged:present.length-1, ratingsMoved:moved };
+}
+function ensureRosterUpdatesV4(){
+  if (lsGet('roster_v4_done')) return;
+  var res = mergeDuplicatePerson(APPURBA_VARIANTS, 'Appurba', 'lead', APPURBA_EMAIL);
+  lsSet('roster_v4_done', 1);
+  try { audit('DUPLICATE_MERGED', res.canonical, res.merged+' duplicate(s) removed, '+res.ratingsMoved+' ratings migrated, moved to Team Lead'); } catch(e){}
 }
 function teamOfEmployee(name) {
   ensureTeamRosters();
