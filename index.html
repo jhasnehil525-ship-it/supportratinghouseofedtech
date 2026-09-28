@@ -1286,16 +1286,110 @@ function setLoadingMsg(msg) { var el = document.getElementById('loading-msg'); i
 // ── Storage primitives + app helpers ─────────────────────────
 function lsGet(k)   { return dbGet(k); }
 function lsSet(k,v) { dbSet(k, v); }
-function getMap()   { return lsGet('access_map') || {}; }
-function setMap(m)  { lsSet('access_map', m); }
+function getMap()   {
+  if(empStoreReady()){
+    var m={};
+    empAll().forEach(function(r){ if(r.active!==false && r.email) m[r.name]={ email:r.email, pass:r.pass||EP }; });
+    return m;
+  }
+  return lsGet('access_map') || {};
+}
+function setMap(m)  {
+  if(empStoreReady()){
+    Object.keys(m).forEach(function(nm){
+      var v=m[nm];
+      var email=(typeof v==='string')?v:((v&&v.email)?v.email:'');
+      var pass=(v && typeof v==='object' && v.pass)?v.pass:EP;
+      var r=empFind(nm);
+      if(r){ if(r.email!==email || r.pass!==pass){ r.email=email; r.pass=pass; r.active=true; empSave(r); } }
+      else { empCreate(nm, curTeam||'support', email, pass); }
+    });
+    // an email removed from the map clears that person's login (row stays)
+    empAll().forEach(function(r){
+      if(r.email && m[r.name]===undefined){ r.email=''; r.pass=''; empSave(r); }
+    });
+    return;
+  }
+  lsSet('access_map', m);
+}
 function teamKey()  { return 'employee_list_' + (curTeam || 'support'); }
 function teamName() { for (var i=0;i<TEAMS.length;i++) if (TEAMS[i].id===curTeam) return TEAMS[i].name; return 'Support Team'; }
 // One-time split of the existing single roster into the two team rosters.
 // Migrations WRITE to the sheet. They must never run on stale/cached data —
 // that is what silently overwrote the roster and wiped recent joinees.
 function migrationsAllowed(){ return (!GAS_ENABLED) || DB_FRESH; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PER-EMPLOYEE ROWS  (emp_<name>)
+//  Each person is ONE row: { name, team, email, pass, active, order }.
+//  Changing one person rewrites only that row, so a stale client can never
+//  wipe the whole roster the way a single "employee_list" cell could.
+// ═══════════════════════════════════════════════════════════════════════════
+function empKey(name){ return 'emp_'+name; }
+function empStoreReady(){ return !!lsGet('emp_store_v1'); }
+function empAll(){
+  var out=[];
+  Object.keys(DB).forEach(function(k){
+    if(k.indexOf('emp_')!==0) return;
+    var r=DB[k];
+    if(!r || typeof r!=='object' || !r.name) return;
+    out.push(r);
+  });
+  out.sort(function(a,b){
+    var ao=(a.order==null?9999:a.order), bo=(b.order==null?9999:b.order);
+    return ao-bo || String(a.name).localeCompare(String(b.name));
+  });
+  return out;
+}
+function empFind(name){
+  var r=lsGet(empKey(name));
+  if(r && r.name) return r;
+  var all=empAll();
+  for(var i=0;i<all.length;i++) if(normTok(all[i].name)===normTok(name)) return all[i];
+  return null;
+}
+function empSave(rec){
+  rec.updatedAt=new Date().toISOString();
+  lsSet(empKey(rec.name), rec);
+}
+function empCreate(name, team, email, pass){
+  var rec={ name:name, team:team||'support', email:email||'', pass:pass||'', active:true, order:empAll().length };
+  empSave(rec); return rec;
+}
+function empSetTeam(name, team){
+  var r=empFind(name);
+  if(!r) return false;
+  if(r.team===team && r.active!==false) return false;
+  r.team=team; r.active=true; empSave(r); return true;
+}
+// One-time conversion: build a row per person from the old list + login map.
+function ensureEmpRows(){
+  if(lsGet('emp_store_v1')) return;
+  var map = lsGet('access_map') || {};
+  var order=0;
+  for(var t=0;t<TEAMS.length;t++){
+    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+    for(var i=0;i<list.length;i++){
+      var nm=list[i];
+      if(!nm || lsGet(empKey(nm))) continue;
+      var rec=map[nm];
+      var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
+      var pass  = (rec && typeof rec==='object' && rec.pass) ? rec.pass : '';
+      lsSet(empKey(nm), { name:nm, team:TEAMS[t].id, email:email, pass:pass, active:true, order:order++ });
+    }
+  }
+  lsSet('emp_store_v1', 1);
+}
+var _rosterBusy=false;
 function ensureTeamRosters() {
   if (!migrationsAllowed()) return;   // read-only mode until a successful sync
+  if (empStoreReady()) return;        // per-employee rows are live; legacy seeding is done
+  if (_rosterBusy) return;
+  _rosterBusy=true;
+  try { legacySeedRosters(); ensureEmpRows(); }
+  finally { _rosterBusy=false; }
+}
+function legacySeedRosters() {
   if (!lsGet('employee_list_support') && !lsGet('employee_list_quality')) {
     var current = lsGet('employee_list') || DEFAULT_EMPS.slice();
     var quality = [], support = [];
@@ -1450,6 +1544,7 @@ function ensureRosterUpdatesV4(){
 }
 function teamOfEmployee(name) {
   ensureTeamRosters();
+  if(empStoreReady()){ var r0=empFind(name); return r0 ? (r0.team||'support') : 'support'; }
   var inTeam=function(tid){ return (lsGet('employee_list_'+tid)||[]).some(function(x){ return normTok(x)===normTok(name); }); };
   if (inTeam('lead')) return 'lead';
   if (inTeam('qlead')) return 'qlead';
@@ -1457,10 +1552,31 @@ function teamOfEmployee(name) {
   if (inTeam('quality')) return 'quality';
   return 'support';
 }
-function getEmps()  { ensureTeamRosters(); return lsGet(teamKey()) || []; }
+function getEmps()  {
+  ensureTeamRosters();
+  if(empStoreReady()){
+    var tid=curTeam||'support', out=[];
+    empAll().forEach(function(r){ if(r.active!==false && (r.team||'support')===tid) out.push(r.name); });
+    return out;
+  }
+  return lsGet(teamKey()) || [];
+}
 function saveEmps(list) {
   if (GAS_ENABLED && !DB_FRESH) {
     showToast('Not synced with Google Sheets — refresh before changing the roster','error');
+    return;
+  }
+  if (empStoreReady()) {
+    var tid = curTeam || 'support';
+    // add or re-activate everyone in the incoming list — one row each
+    for (var a=0; a<list.length; a++) {
+      var nm=list[a], r=empFind(nm);
+      if(r){ if(r.team!==tid || r.active===false){ r.team=tid; r.active=true; empSave(r); } }
+      else { empCreate(nm, tid, '', ''); }
+    }
+    // NOTE: saveEmps never removes anyone. Taking a person off a team is an
+    // explicit action (deleteEmployee / promote / move), so a stale client
+    // sending a short list can no longer shrink the roster at all.
     return;
   }
   // Guard: never let a stale/short cached list overwrite a good roster in the sheet.
@@ -1666,6 +1782,7 @@ function roleForLogin(email, name){
 // Is this name in ANY team's roster (i.e. a real, visible person vs. a leftover login-map record)?
 function isInAnyTeam(name){
   ensureTeamRosters();
+  if(empStoreReady()){ var r=empFind(name); return !!(r && r.active!==false); }
   for(var t=0;t<TEAMS.length;t++){ var list=lsGet('employee_list_'+TEAMS[t].id)||[]; if(list.some(function(n){ return normTok(n)===normTok(name); })) return true; }
   return false;
 }
@@ -1955,18 +2072,27 @@ function allAgents(){
     if(seen[k]) continue; seen[k]=1;
     out.push({ name:ad[a].name||em, team:'Manager', email:em, role:'manager', adminName:ad[a].name||em, sort:0 });
   }
-  // Everyone in every team roster, with the role they would actually get
-  for(var t=0;t<TEAMS.length;t++){
-    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
-    for(var i=0;i<list.length;i++){
-      var nm=list[i], key='p:'+nm.toLowerCase();
-      if(seen[key]) continue; seen[key]=1;
-      var rec=getMap()[nm];
-      var mail=rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
-      var r=roleForLogin(mail, nm);
-      out.push({ name:nm, team:TEAMS[t].name, email:mail, role:r,
-                 sort:(r==='manager'?0:(r==='lead'?1:2)) });
+  // Everyone on the roster, with the role they would actually get
+  var people=[];
+  if(empStoreReady()){
+    empAll().forEach(function(rw){ if(rw.active!==false) people.push({ name:rw.name, team:rw.team||'support', email:rw.email||'' }); });
+  } else {
+    for(var t=0;t<TEAMS.length;t++){
+      var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+      for(var i=0;i<list.length;i++){
+        var rec0=getMap()[list[i]];
+        people.push({ name:list[i], team:TEAMS[t].id, email:rec0?(typeof rec0==='string'?rec0:(rec0.email||'')):'' });
+      }
     }
+  }
+  for(var p=0;p<people.length;p++){
+    var nm=people[p].name, key='p:'+nm.toLowerCase();
+    if(seen[key]) continue; seen[key]=1;
+    var tn=people[p].team;
+    for(var q=0;q<TEAMS.length;q++) if(TEAMS[q].id===people[p].team) tn=TEAMS[q].name;
+    var r=roleForLogin(people[p].email, nm);
+    out.push({ name:nm, team:tn, email:people[p].email, role:r,
+               sort:(r==='manager'?0:(r==='lead'?1:2)) });
   }
   out.sort(function(x,y){ return (x.sort-y.sort) || x.name.localeCompare(y.name); });
   return out;
@@ -2523,8 +2649,14 @@ function deleteEmployee(emp) {
   if(!isSuper()){ showToast('Only the super admin can remove an employee. Use Promote to move someone between teams.','error'); return; }
   if(!canWrite('removing an employee')) return;
   if(!confirm('Delete "'+emp+'" from the employee list?\n\nRatings data will be preserved but they will be removed from all future rating lists and login access will be revoked.')) return;
-  var list=getEmps(); list=list.filter(function(e){return e!==emp;}); saveEmps(list); EMPS=list;
-  var map=getMap(); if(map[emp]){ delete map[emp]; setMap(map); }
+  if(empStoreReady()){
+    var r=empFind(emp);
+    if(r){ r.active=false; empSave(r); }
+    EMPS=getEmps();
+  } else {
+    var list=getEmps(); list=list.filter(function(e){return e!==emp;}); saveEmps(list); EMPS=list;
+    var map=getMap(); if(map[emp]){ delete map[emp]; setMap(map); }
+  }
   audit('EMPLOYEE_DELETED', emp, 'removed from '+teamName());
   showToast(emp+' removed','info'); renderAccessTable();
 }
@@ -2560,6 +2692,12 @@ function openPromote(name){
 function closePromote(){ var ov=document.getElementById('promote-overlay'); if(ov) ov.style.display='none'; }
 function moveToTeam(name, targetId){
   ensureTeamRosters();
+  if(empStoreReady()){
+    var r=empFind(name);
+    if(r){ r.team=targetId; r.active=true; empSave(r); }
+    else { empCreate(name, targetId, '', ''); }
+    return;
+  }
   for(var t=0;t<TEAMS.length;t++){
     var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[];
     var f=list.filter(function(n){ return normTok(n)!==normTok(name); });
@@ -2582,8 +2720,13 @@ function promoteToManager(name){
   var exists=false;
   for(var i=0;i<da.length;i++){ if(String(da[i].email||'').toLowerCase()===email){ exists=true; break; } }
   if(!exists){ da.push({ email:email, name:name, pass:pass }); lsSet('dynamic_admins', da); }
-  for(var t=0;t<TEAMS.length;t++){ var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[]; var f=list.filter(function(n){ return normTok(n)!==normTok(name); }); if(f.length!==list.length) lsSet(key, f); }
-  if(map[name]!==undefined){ delete map[name]; setMap(map); }
+  if(empStoreReady()){
+    var r=empFind(name);
+    if(r){ r.active=false; empSave(r); }
+  } else {
+    for(var t=0;t<TEAMS.length;t++){ var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[]; var f=list.filter(function(n){ return normTok(n)!==normTok(name); }); if(f.length!==list.length) lsSet(key, f); }
+    if(map[name]!==undefined){ delete map[name]; setMap(map); }
+  }
   return true;
 }
 function doPromote(name, target, label){
@@ -2782,6 +2925,14 @@ function renameEmployee(oldName) {
   // migrate login mapping + photo
   var map=getMap(); if(map[oldName]!==undefined){ map[newName]=map[oldName]; delete map[oldName]; setMap(map); }
   var ph=lsGetLocal('photo_'+oldName); if(ph){ lsSetLocal('photo_'+newName, ph); try{ localStorage.removeItem('photo_'+oldName); }catch(e){} }
+  if(empStoreReady()){
+    var oldRec=empFind(oldName);
+    if(oldRec){
+      var nr={ name:newName, team:oldRec.team, email:oldRec.email||'', pass:oldRec.pass||'', active:true, order:oldRec.order };
+      empSave(nr);
+      dbDelete(empKey(oldRec.name));
+    }
+  }
   // rename the column in the salary sheet too
   syncRenameAgent(oldName, newName);
   audit('EMPLOYEE_RENAMED', oldName+' -> '+newName, moved+' ratings migrated');
@@ -2812,9 +2963,13 @@ function namesWithRatings(){
 }
 function findMissingPeople(){
   var counts=namesWithRatings(), inRoster={};
-  for(var t=0;t<TEAMS.length;t++){
-    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
-    for(var i=0;i<list.length;i++) inRoster[normTok(list[i])]=1;
+  if(empStoreReady()){
+    empAll().forEach(function(r){ if(r.active!==false) inRoster[normTok(r.name)]=1; });
+  } else {
+    for(var t=0;t<TEAMS.length;t++){
+      var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+      for(var i=0;i<list.length;i++) inRoster[normTok(list[i])]=1;
+    }
   }
   var admins=allAdmins().map(function(a){ return normTok(a.name||''); });
   var out=[];
@@ -2863,12 +3018,22 @@ function restoreMissing(){
   var tid=sel?sel.value:'support';
   var tname=''; for(var t=0;t<TEAMS.length;t++) if(TEAMS[t].id===tid) tname=TEAMS[t].name;
   if(!confirm('Restore '+picked.length+' employee(s) into '+tname+'?\n\nTheir existing ratings will reappear automatically.')) return;
-  var key='employee_list_'+tid, list=lsGet(key)||[], added=0;
-  for(var j=0;j<picked.length;j++){
-    if(!list.some(function(n){ return normTok(n)===normTok(picked[j]); })){ list.push(picked[j]); added++; }
+  var added=0;
+  if(empStoreReady()){
+    for(var j=0;j<picked.length;j++){
+      var r=empFind(picked[j]);
+      if(r){ r.team=tid; r.active=true; empSave(r); }
+      else { empCreate(picked[j], tid, '', ''); }
+      added++;
+    }
+  } else {
+    var key='employee_list_'+tid, list=lsGet(key)||[];
+    for(var j2=0;j2<picked.length;j2++){
+      if(!list.some(function(n){ return normTok(n)===normTok(picked[j2]); })){ list.push(picked[j2]); added++; }
+    }
+    lsSet(key, list);
   }
-  lsSet(key, list);
-  if(tid===curTeam) EMPS=list;
+  EMPS=getEmps();
   audit('EMPLOYEES_RESTORED', tname, added+' restored: '+picked.join(', '));
   showToast(added+' employee(s) restored to '+tname+' ✓','success');
   renderAccessTable();
@@ -2876,6 +3041,7 @@ function restoreMissing(){
 }
 // ── Re-apply the intended team structure (safe: only moves, never deletes) ────
 function actualNameOf(name){
+  if(empStoreReady()){ var rr=empFind(name); if(rr) return rr.name; }
   for(var t=0;t<TEAMS.length;t++){
     var list=lsGet('employee_list_'+TEAMS[t].id)||[];
     for(var i=0;i<list.length;i++) if(normTok(list[i])===normTok(name)) return list[i];
@@ -2887,6 +3053,14 @@ function actualNameOf(name){
 function moveIfPresent(name, targetTeam, moved){
   var real=actualNameOf(name);
   if(!real) return false;
+  if(empStoreReady()){
+    var r=empFind(real);
+    if(!r){ empCreate(real, targetTeam, '', ''); moved.push(real+' → '+targetTeam); return true; }
+    if(r.team===targetTeam && r.active!==false) return false;
+    r.team=targetTeam; r.active=true; empSave(r);
+    moved.push(real+' → '+targetTeam);
+    return true;
+  }
   var already=(lsGet('employee_list_'+targetTeam)||[]).some(function(x){ return normTok(x)===normTok(real); });
   for(var t=0;t<TEAMS.length;t++){
     if(TEAMS[t].id===targetTeam) continue;
