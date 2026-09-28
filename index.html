@@ -797,6 +797,18 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         <div style="font-size:11px;color:var(--muted);margin-top:10px;">Restore only adds or updates keys from the file — it never deletes anything that is already in the sheet. Employee photos are stored locally per browser and are included in the file but restored only on this device.</div>
       </div>
 
+      <!-- Recover missing employees -->
+      <div class="asec" id="recover-sec" style="margin-bottom:20px;border-color:rgba(255,201,74,0.4);">
+        <h3>🛟 Recover Missing Employees</h3>
+        <p>Scans every rating in the sheet and finds people who have ratings but are <strong>no longer in any team roster</strong>. Their ratings were never deleted — only their name fell out of the list. Tick who to restore and pick the team.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+          <button class="abtn" type="button" onclick="scanMissing()" style="padding:11px 22px;">🔍 Scan for missing employees</button>
+          <select id="recover-team" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;outline:none;"></select>
+          <button class="abtn" type="button" onclick="restoreMissing()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;padding:11px 22px;">↩ Restore selected</button>
+        </div>
+        <div id="recover-list" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;"></div>
+      </div>
+
       <!-- Team Lead sign-in access (by email) -->
       <div class="asec" id="leademail-sec" style="margin-bottom:20px;">
         <h3>Team Lead Sign-in Access</h3>
@@ -1275,7 +1287,11 @@ function setMap(m)  { lsSet('access_map', m); }
 function teamKey()  { return 'employee_list_' + (curTeam || 'support'); }
 function teamName() { for (var i=0;i<TEAMS.length;i++) if (TEAMS[i].id===curTeam) return TEAMS[i].name; return 'Support Team'; }
 // One-time split of the existing single roster into the two team rosters.
+// Migrations WRITE to the sheet. They must never run on stale/cached data —
+// that is what silently overwrote the roster and wiped recent joinees.
+function migrationsAllowed(){ return (!GAS_ENABLED) || DB_FRESH; }
 function ensureTeamRosters() {
+  if (!migrationsAllowed()) return;   // read-only mode until a successful sync
   if (!lsGet('employee_list_support') && !lsGet('employee_list_quality')) {
     var current = lsGet('employee_list') || DEFAULT_EMPS.slice();
     var quality = [], support = [];
@@ -1439,6 +1455,10 @@ function teamOfEmployee(name) {
 }
 function getEmps()  { ensureTeamRosters(); return lsGet(teamKey()) || []; }
 function saveEmps(list) {
+  if (GAS_ENABLED && !DB_FRESH) {
+    showToast('Not synced with Google Sheets — refresh before changing the roster','error');
+    return;
+  }
   // Guard: never let a stale/short cached list overwrite a good roster in the sheet.
   var cur = lsGet(teamKey()) || [];
   if (cur.length && list.length < cur.length - 1) {
@@ -1602,7 +1622,7 @@ function canWrite(actionLabel){
 // Full audit trail -> "Audit Log" tab in the data sheet (superadmin visibility).
 function audit(action, target, details){
   if(!GAS_ENABLED) return;
-  var who = cu ? ((cu.adminName||cu.empName||'')+' <'+(cu.email||'')+'>') : 'unknown';
+  var who = cu ? ((cu.adminName||cu.empName||'')+' <'+(cu.email||'')+'>') : 'SYSTEM (automatic migration, no user)';
   try {
     fetch(GAS_URL, {
       method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
@@ -2771,7 +2791,85 @@ function syncRenameAgent(oldName, newName) {
 }
 
 // ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
-// ── Team Lead sign-in access (email allowlist) ────────────────
+// ── Recover employees who have ratings but are missing from every roster ──────
+function namesWithRatings(){
+  var counts={};
+  Object.keys(DB).forEach(function(k){
+    if(k.indexOf('r26_')!==0) return;
+    var rest=k.substring(4);                    // "<month>_w<week>_<name>"
+    var p=rest.indexOf('_w'); if(p===-1) return;
+    var after=rest.substring(p+2);              // "<week>_<name>"
+    var q=after.indexOf('_'); if(q===-1) return;
+    var nm=after.substring(q+1);
+    if(!nm) return;
+    counts[nm]=(counts[nm]||0)+1;
+  });
+  return counts;
+}
+function findMissingPeople(){
+  var counts=namesWithRatings(), inRoster={};
+  for(var t=0;t<TEAMS.length;t++){
+    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+    for(var i=0;i<list.length;i++) inRoster[normTok(list[i])]=1;
+  }
+  var admins=allAdmins().map(function(a){ return normTok(a.name||''); });
+  var out=[];
+  Object.keys(counts).forEach(function(nm){
+    if(inRoster[normTok(nm)]) return;
+    if(admins.indexOf(normTok(nm))!==-1) return;   // promoted managers are not missing
+    out.push({ name:nm, ratings:counts[nm] });
+  });
+  out.sort(function(a,b){ return b.ratings-a.ratings || a.name.localeCompare(b.name); });
+  return out;
+}
+function scanMissing(){
+  if(!isManager()) return;
+  if(GAS_ENABLED && !DB_FRESH){ showToast('Not synced — click the sync chip first, then scan','error'); return; }
+  var sel=document.getElementById('recover-team');
+  if(sel && !sel.options.length){
+    for(var t=0;t<TEAMS.length;t++){ var o=document.createElement('option'); o.value=TEAMS[t].id; o.textContent='→ '+TEAMS[t].name; sel.appendChild(o); }
+  }
+  var box=document.getElementById('recover-list'); if(!box) return;
+  var missing=findMissingPeople();
+  box.innerHTML='';
+  if(!missing.length){ box.innerHTML='<div style="font-size:13px;color:var(--accent3);">✓ Nobody is missing — every rated person is in a roster.</div>'; return; }
+  var head=document.createElement('div');
+  head.style.cssText='font-size:12px;color:var(--accent4);margin-bottom:4px;';
+  head.textContent=missing.length+' person(s) have ratings but are not in any team:';
+  box.appendChild(head);
+  for(var i=0;i<missing.length;i++){
+    (function(m){
+      var row=document.createElement('label');
+      row.style.cssText='display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:8px 12px;cursor:pointer;';
+      row.innerHTML='<input type="checkbox" class="recover-cb" value="'+escHtml(m.name)+'" checked style="width:16px;height:16px;cursor:pointer;">'
+        +'<span style="flex:1;font-size:13px;">'+escHtml(m.name)+'</span>'
+        +'<span style="font-size:11px;color:var(--muted);">'+m.ratings+' rating'+(m.ratings===1?'':'s')+'</span>';
+      box.appendChild(row);
+    })(missing[i]);
+  }
+}
+function restoreMissing(){
+  if(!isManager()) return;
+  if(!canWrite('restoring employees')) return;
+  var boxes=document.querySelectorAll('#recover-list .recover-cb');
+  var picked=[];
+  for(var i=0;i<boxes.length;i++) if(boxes[i].checked) picked.push(boxes[i].value);
+  if(!picked.length){ showToast('Scan first, then tick who to restore','error'); return; }
+  var sel=document.getElementById('recover-team');
+  var tid=sel?sel.value:'support';
+  var tname=''; for(var t=0;t<TEAMS.length;t++) if(TEAMS[t].id===tid) tname=TEAMS[t].name;
+  if(!confirm('Restore '+picked.length+' employee(s) into '+tname+'?\n\nTheir existing ratings will reappear automatically.')) return;
+  var key='employee_list_'+tid, list=lsGet(key)||[], added=0;
+  for(var j=0;j<picked.length;j++){
+    if(!list.some(function(n){ return normTok(n)===normTok(picked[j]); })){ list.push(picked[j]); added++; }
+  }
+  lsSet(key, list);
+  if(tid===curTeam) EMPS=list;
+  audit('EMPLOYEES_RESTORED', tname, added+' restored: '+picked.join(', '));
+  showToast(added+' employee(s) restored to '+tname+' ✓','success');
+  renderAccessTable();
+  scanMissing();
+}
 function renderLeadEmails(){
   var box=document.getElementById('lead-email-list'); if(!box) return; box.innerHTML='';
   var le=lsGet('lead_emails')||[];
