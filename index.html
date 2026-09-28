@@ -1352,6 +1352,28 @@ function empSave(rec){
   rec.updatedAt=new Date().toISOString();
   lsSet(empKey(rec.name), rec);
 }
+// Write many keys in ONE request. Writing 50 rows as 50 separate posts gets
+// throttled by Apps Script and silently loses rows — this sends them together.
+function bulkWrite(pairs, done){
+  var keys=Object.keys(pairs||{});
+  if(!keys.length){ if(done) done(); return; }
+  keys.forEach(function(k){
+    DB[k]=pairs[k];
+    try { localStorage.setItem(k, JSON.stringify(pairs[k])); } catch(e){}
+  });
+  if(!GAS_ENABLED){ if(done) done(); return; }
+  var CHUNK=60, sent=0;
+  setSyncStatus('syncing');
+  (function next(){
+    if(sent>=keys.length){ setSyncStatus('synced'); if(done) done(); return; }
+    var slice=keys.slice(sent, sent+CHUNK), part={};
+    slice.forEach(function(k){ part[k]=pairs[k]; });
+    fetch(GAS_URL, { method:'POST', mode:'no-cors', headers:{ 'Content-Type':'text/plain' },
+      body: JSON.stringify({ action:'restoreAll', pairs:part }) }).catch(function(){});
+    sent+=slice.length;
+    setTimeout(next, 900);
+  })();
+}
 function empCreate(name, team, email, pass){
   var rec={ name:name, team:team||'support', email:email||'', pass:pass||'', active:true, order:empAll().length };
   empSave(rec); return rec;
@@ -1366,7 +1388,7 @@ function empSetTeam(name, team){
 function ensureEmpRows(){
   if(lsGet('emp_store_v1')) return;
   var map = lsGet('access_map') || {};
-  var order=0;
+  var order=0, pairs={};
   for(var t=0;t<TEAMS.length;t++){
     var list=lsGet('employee_list_'+TEAMS[t].id)||[];
     for(var i=0;i<list.length;i++){
@@ -1375,10 +1397,11 @@ function ensureEmpRows(){
       var rec=map[nm];
       var email = rec ? (typeof rec==='string'?rec:(rec.email||'')) : '';
       var pass  = (rec && typeof rec==='object' && rec.pass) ? rec.pass : '';
-      lsSet(empKey(nm), { name:nm, team:TEAMS[t].id, email:email, pass:pass, active:true, order:order++ });
+      pairs[empKey(nm)] = { name:nm, team:TEAMS[t].id, email:email, pass:pass, active:true, order:order++ };
     }
   }
-  lsSet('emp_store_v1', 1);
+  pairs['emp_store_v1'] = 1;
+  bulkWrite(pairs);
 }
 var _rosterBusy=false;
 function ensureTeamRosters() {
@@ -3020,12 +3043,14 @@ function restoreMissing(){
   if(!confirm('Restore '+picked.length+' employee(s) into '+tname+'?\n\nTheir existing ratings will reappear automatically.')) return;
   var added=0;
   if(empStoreReady()){
+    var pairs={}, ord=empAll().length;
     for(var j=0;j<picked.length;j++){
       var r=empFind(picked[j]);
-      if(r){ r.team=tid; r.active=true; empSave(r); }
-      else { empCreate(picked[j], tid, '', ''); }
+      if(r){ r.team=tid; r.active=true; r.updatedAt=new Date().toISOString(); pairs[empKey(r.name)]=r; }
+      else { pairs[empKey(picked[j])]={ name:picked[j], team:tid, email:'', pass:'', active:true, order:ord++ }; }
       added++;
     }
+    bulkWrite(pairs, function(){ EMPS=getEmps(); renderAccessTable(); scanMissing(); });
   } else {
     var key='employee_list_'+tid, list=lsGet(key)||[];
     for(var j2=0;j2<picked.length;j2++){
@@ -3035,7 +3060,7 @@ function restoreMissing(){
   }
   EMPS=getEmps();
   audit('EMPLOYEES_RESTORED', tname, added+' restored: '+picked.join(', '));
-  showToast(added+' employee(s) restored to '+tname+' ✓','success');
+  showToast(added+' employee(s) restored to '+tname+' — writing to Google Sheets, wait for ✓ Synced','success');
   renderAccessTable();
   scanMissing();
 }
@@ -3089,6 +3114,11 @@ function repairTeams(){
   QLEAD_SEED.forEach(function(n){ moveIfPresent(n,'qlead',moved); });
   QUALITY_SEED.forEach(function(n){ moveIfPresent(n,'quality',moved); });
   EMPS=getEmps();
+  if(empStoreReady()){
+    var pairs={};
+    empAll().forEach(function(r){ if(r._dirty){ delete r._dirty; pairs[empKey(r.name)]=r; } });
+    if(Object.keys(pairs).length) bulkWrite(pairs, function(){ EMPS=getEmps(); renderAccessTable(); });
+  }
   audit('TEAMS_REPAIRED','', moved.length?moved.join('; '):'no changes needed');
   showToast(moved.length?(moved.length+' person(s) moved back ✓'):'Everyone is already in the right team','success');
   renderAccessTable();
