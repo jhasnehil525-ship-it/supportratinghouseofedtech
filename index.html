@@ -806,6 +806,10 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
           <select id="recover-team" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;outline:none;"></select>
           <button class="abtn" type="button" onclick="restoreMissing()" style="background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;padding:11px 22px;">↩ Restore selected</button>
         </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:10px;">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;">If people landed back in the wrong team (e.g. a team lead showing up in Support), re-apply the correct team structure. Nothing is deleted — people are only moved.</div>
+          <button class="abtn" type="button" onclick="repairTeams()" style="background:rgba(255,201,74,0.2);color:var(--accent4);border:1px solid rgba(255,201,74,0.4);padding:11px 22px;">🔧 Re-apply team structure</button>
+        </div>
         <div id="recover-list" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;"></div>
       </div>
 
@@ -2867,6 +2871,52 @@ function restoreMissing(){
   if(tid===curTeam) EMPS=list;
   audit('EMPLOYEES_RESTORED', tname, added+' restored: '+picked.join(', '));
   showToast(added+' employee(s) restored to '+tname+' ✓','success');
+  renderAccessTable();
+  scanMissing();
+}
+// ── Re-apply the intended team structure (safe: only moves, never deletes) ────
+function actualNameOf(name){
+  for(var t=0;t<TEAMS.length;t++){
+    var list=lsGet('employee_list_'+TEAMS[t].id)||[];
+    for(var i=0;i<list.length;i++) if(normTok(list[i])===normTok(name)) return list[i];
+  }
+  var c=namesWithRatings(), keys=Object.keys(c);
+  for(var j=0;j<keys.length;j++) if(normTok(keys[j])===normTok(name)) return keys[j];
+  return null;
+}
+function moveIfPresent(name, targetTeam, moved){
+  var real=actualNameOf(name);
+  if(!real) return false;
+  var already=(lsGet('employee_list_'+targetTeam)||[]).some(function(x){ return normTok(x)===normTok(real); });
+  for(var t=0;t<TEAMS.length;t++){
+    if(TEAMS[t].id===targetTeam) continue;
+    var key='employee_list_'+TEAMS[t].id, list=lsGet(key)||[];
+    var f=list.filter(function(x){ return normTok(x)!==normTok(real); });
+    if(f.length!==list.length) lsSet(key, f);
+  }
+  if(!already){
+    var tkey='employee_list_'+targetTeam, tlist=lsGet(tkey)||[];
+    tlist.push(real); lsSet(tkey, tlist);
+    moved.push(real+' → '+targetTeam);
+    return true;
+  }
+  return false;
+}
+function repairTeams(){
+  if(!isManager()) return;
+  if(!canWrite('repairing teams')) return;
+  if(GAS_ENABLED && !DB_FRESH){ showToast('Not synced — click the sync chip first','error'); return; }
+  if(!confirm('Re-apply the intended team structure?\n\nTeam leads, SMEs and quality leads will be moved back to their own teams. Nobody is deleted and no ratings change.')) return;
+  var moved=[];
+  LEAD_SEED.forEach(function(n){ moveIfPresent(n,'lead',moved); });
+  LEAD_EXTRA_SEED.forEach(function(n){ moveIfPresent(n,'lead',moved); });
+  APPURBA_VARIANTS.forEach(function(n){ moveIfPresent(n,'lead',moved); });
+  SME_SEED.forEach(function(n){ moveIfPresent(n,'sme',moved); });
+  QLEAD_SEED.forEach(function(n){ moveIfPresent(n,'qlead',moved); });
+  QUALITY_SEED.forEach(function(n){ moveIfPresent(n,'quality',moved); });
+  EMPS=getEmps();
+  audit('TEAMS_REPAIRED','', moved.length?moved.join('; '):'no changes needed');
+  showToast(moved.length?(moved.length+' person(s) moved back ✓'):'Everyone is already in the right team','success');
   renderAccessTable();
   scanMissing();
 }
