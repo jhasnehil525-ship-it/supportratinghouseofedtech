@@ -534,6 +534,16 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
 </div>
 
 <!-- LOGIN -->
+<div id="pending-screen" style="display:none;position:fixed;inset:0;z-index:120;align-items:center;justify-content:center;padding:20px;">
+  <div class="login-card" style="text-align:center;">
+    <div class="login-logo" style="margin:0 auto 20px;">⏳</div>
+    <h2>Almost there</h2>
+    <p style="margin-bottom:18px;">Your Google account is verified, but it isn't linked to an employee record yet.</p>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13px;color:var(--text);margin-bottom:18px;word-break:break-all;" id="pending-who"></div>
+    <p style="margin-bottom:22px;">Your manager has been notified — they just need to link your account once. Please try again after that.</p>
+    <button type="button" onclick="pendingSignOut()" style="width:100%;padding:13px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:Syne,sans-serif;font-size:14px;font-weight:700;cursor:pointer;">← Back to sign in</button>
+  </div>
+</div>
 <div id="login-screen">
   <div class="login-card">
     <div class="login-logo">⭐</div>
@@ -795,6 +805,13 @@ header { border-bottom:1px solid rgba(124,111,255,0.18); box-shadow:0 8px 28px -
         </div>
         <div id="restore-result" style="display:none;margin-top:14px;font-size:13px;"></div>
         <div style="font-size:11px;color:var(--muted);margin-top:10px;">Restore only adds or updates keys from the file — it never deletes anything that is already in the sheet. Employee photos are stored locally per browser and are included in the file but restored only on this device.</div>
+      </div>
+
+      <!-- Pending sign-ins -->
+      <div class="asec" id="pending-sec" style="margin-bottom:20px;border-color:rgba(124,111,255,0.45);">
+        <h3>🔗 Pending Sign-ins <span id="pending-count" style="font-size:12px;color:var(--accent4);font-weight:500;"></span></h3>
+        <p>Company accounts that signed in but aren't linked to an employee yet. Link each one to an existing person, or add them as a new employee. Nobody is ever rejected — they just wait here.</p>
+        <div id="pending-list" style="display:flex;flex-direction:column;gap:8px;"></div>
       </div>
 
       <!-- Recover missing employees -->
@@ -2018,8 +2035,46 @@ function handleGoogleCredential(response) {
       cu = { email:email, role:roleForLogin(email, autoName), empName:autoName };
       startApp(); return;
     }
+    // Verified company account that we could not match to a name: never reject it.
+    // Queue it so a manager can link it in one click, and show a friendly screen.
+    recordPending(email, payload.name || '');
+    showPendingScreen(email, payload.name || '');
+    return;
   }
   showLoginError('This Google account (' + email + ') is not authorized. Ask your manager to assign your email under Access Management.');
+}
+
+// ── Pending sign-ins (verified company emails waiting to be linked) ──────────
+function recordPending(email, displayName){
+  var key='pending_'+String(email).toLowerCase();
+  var existing=lsGet(key);
+  lsSet(key, { email:email, name:displayName||'', at:(existing&&existing.at)?existing.at:new Date().toISOString(), last:new Date().toISOString() });
+  audit('PENDING_SIGNIN', email, displayName||'');
+}
+function pendingAll(){
+  var out=[];
+  Object.keys(DB).forEach(function(k){
+    if(k.indexOf('pending_')!==0) return;
+    var r=DB[k];
+    if(r && r.email) out.push(r);
+  });
+  out.sort(function(a,b){ return String(a.at).localeCompare(String(b.at)); });
+  return out;
+}
+function showPendingScreen(email, displayName){
+  var ls=document.getElementById('login-screen');
+  if(ls) ls.style.display='none';
+  var el=document.getElementById('pending-screen');
+  if(el){
+    var who=document.getElementById('pending-who');
+    if(who) who.textContent=(displayName? (displayName+' — ') : '')+email;
+    el.style.display='flex';
+  }
+}
+function pendingSignOut(){
+  var el=document.getElementById('pending-screen'); if(el) el.style.display='none';
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
+  try { if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect(); } catch(e){}
 }
 
 function initGoogleSignIn() {
@@ -2890,6 +2945,7 @@ function renderAccessTable() {
     })(EMPS[i],i);
   }
   filterAccessEmployees();
+  renderPendingList();
   renderLeadEmails();
   renderCriteriaEditor();
   renderKPIEditor();
@@ -2979,6 +3035,81 @@ function syncRenameAgent(oldName, newName) {
 }
 
 // ── KPI criteria editor (add / edit / remove; shared across everyone) ─────────
+// ── Pending sign-in queue (manager side) ──────────────────────────────────────
+function renderPendingList(){
+  var box=document.getElementById('pending-list'); if(!box) return;
+  var cnt=document.getElementById('pending-count');
+  var list=pendingAll();
+  if(cnt) cnt.textContent = list.length ? ('— '+list.length+' waiting') : '';
+  box.innerHTML='';
+  if(!list.length){ box.innerHTML='<div style="font-size:13px;color:var(--accent3);">✓ Nothing pending — every company account is linked.</div>'; return; }
+  var people=[];
+  if(empStoreReady()) empAll().forEach(function(r){ if(r.active!==false) people.push(r.name); });
+  else for(var t=0;t<TEAMS.length;t++) (lsGet('employee_list_'+TEAMS[t].id)||[]).forEach(function(n){ people.push(n); });
+  people.sort();
+  for(var i=0;i<list.length;i++){
+    (function(p){
+      var row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;';
+      var info=document.createElement('div');
+      info.style.cssText='flex:1;min-width:200px;';
+      info.innerHTML='<div style="font-size:13px;font-weight:600;">'+escHtml(p.name||'(no name)')+'</div><div style="font-size:11px;color:var(--muted);word-break:break-all;">'+escHtml(p.email)+'</div>';
+      var sel=document.createElement('select');
+      sel.style.cssText='background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-size:12px;outline:none;min-width:180px;';
+      var o0=document.createElement('option'); o0.value=''; o0.textContent='— link to existing employee —'; sel.appendChild(o0);
+      people.forEach(function(nm){ var o=document.createElement('option'); o.value=nm; o.textContent=nm; sel.appendChild(o); });
+      var linkBtn=document.createElement('button'); linkBtn.className='abtn'; linkBtn.textContent='🔗 Link';
+      linkBtn.onclick=function(){ linkPending(p.email, sel.value); };
+      var newBtn=document.createElement('button'); newBtn.className='abtn';
+      newBtn.style.cssText='background:linear-gradient(135deg,var(--accent3),var(--accent));color:#080810;';
+      newBtn.textContent='+ Add as new';
+      newBtn.onclick=function(){ createFromPending(p.email, p.name||''); };
+      var delBtn=document.createElement('button'); delBtn.className='rbtn'; delBtn.textContent='Dismiss';
+      delBtn.onclick=function(){ dismissPending(p.email); };
+      row.appendChild(info); row.appendChild(sel); row.appendChild(linkBtn); row.appendChild(newBtn); row.appendChild(delBtn);
+      box.appendChild(row);
+    })(list[i]);
+  }
+}
+function clearPending(email){ dbDelete('pending_'+String(email).toLowerCase()); }
+function linkPending(email, name){
+  if(!isManager()) return;
+  if(!name){ showToast('Pick an employee to link to','error'); return; }
+  if(!canWrite('linking a sign-in')) return;
+  var r=empFind(name);
+  if(empStoreReady() && r){ r.email=email; if(!r.pass) r.pass=EP; r.active=true; empSave(r); }
+  else { var m=getMap(); m[name]={ email:email, pass:(m[name]&&m[name].pass)?m[name].pass:EP }; setMap(m); }
+  clearPending(email);
+  audit('SIGNIN_LINKED', name, email);
+  showToast(email+' linked to '+name+' ✓','success');
+  renderAccessTable();
+}
+function createFromPending(email, displayName){
+  if(!isManager()) return;
+  if(!canWrite('adding an employee')) return;
+  var suggested = displayName || deriveNameFromEmail(email).replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+  var name = prompt('Add as a new employee in '+teamName()+'.\n\nName:', suggested);
+  if(name===null) return;
+  name=name.trim();
+  if(!name){ showToast('Name cannot be empty','error'); return; }
+  if(empFind(name)){ showToast('"'+name+'" already exists — use Link instead','error'); return; }
+  if(empStoreReady()) empCreate(name, curTeam||'support', email, EP);
+  else { var list=getEmps(); list.push(name); saveEmps(list); var m2=getMap(); m2[name]={email:email,pass:EP}; setMap(m2); }
+  syncAddAgent(name);
+  clearPending(email);
+  audit('EMPLOYEE_CREATED', name, 'from pending sign-in '+email+', team '+teamName());
+  showToast(name+' added and linked ✓','success');
+  EMPS=getEmps();
+  renderAccessTable();
+}
+function dismissPending(email){
+  if(!isManager()) return;
+  if(!confirm('Dismiss this sign-in request?\n\nIf they sign in again it will reappear here.')) return;
+  clearPending(email);
+  audit('PENDING_DISMISSED', email, '');
+  renderPendingList();
+}
+
 // ── Recover employees who have ratings but are missing from every roster ──────
 function namesWithRatings(){
   var counts={};
@@ -4134,7 +4265,7 @@ function voiceToggle(){
 
 // ── Boot ──────────────────────────────────────────────────────
 window.onload = async function() {
-  var APP_VERSION = '2026.09.28-rows-batch3';
+  var APP_VERSION = '2026.10.05-pending-signin';
   var vEl=document.getElementById('app-version'); if(vEl) vEl.textContent=APP_VERSION;
   try { document.title = 'Team Performance Rating'; } catch(e) {}
   init3DBackground();
