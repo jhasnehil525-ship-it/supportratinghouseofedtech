@@ -2035,13 +2035,62 @@ function handleGoogleCredential(response) {
       cu = { email:email, role:roleForLogin(email, autoName), empName:autoName };
       startApp(); return;
     }
-    // Verified company account that we could not match to a name: never reject it.
-    // Queue it so a manager can link it in one click, and show a friendly screen.
-    recordPending(email, payload.name || '');
-    showPendingScreen(email, payload.name || '');
+    // Before queuing: the manager may have linked this account seconds ago and
+    // this browser could still be on older data. Pull fresh data and retry once.
+    retryAfterRefresh(email, payload.name || '');
     return;
   }
   showLoginError('This Google account (' + email + ') is not authorized. Ask your manager to assign your email under Access Management.');
+}
+
+// Pull the latest data straight from the sheet, then try to sign this person in
+// again. Only if it still fails do we queue them as pending.
+function retryAfterRefresh(email, displayName){
+  setLoadingMsg && setLoadingMsg('Checking your access...');
+  var done=function(){
+    // admin?
+    var ad=allAdmins();
+    for(var i=0;i<ad.length;i++){
+      if(String(ad[i].email||'').toLowerCase()===email){
+        cu={ email:email, role:'manager', empName:null, adminName:ad[i].name };
+        startApp(); return;
+      }
+    }
+    // linked employee?
+    var map=getMap(), keys=Object.keys(map);
+    for(var j=0;j<keys.length;j++){
+      var rec=map[keys[j]];
+      var e=(typeof rec==='string')?rec:(rec&&rec.email?rec.email:'');
+      if(String(e).toLowerCase().trim()===email){
+        cu={ email:email, role:roleForLogin(email, keys[j]), empName:keys[j] };
+        startApp(); return;
+      }
+    }
+    // name match?
+    var autoName=matchEmployeeByEmail(email);
+    if(autoName){
+      var m2=getMap(), cur=m2[autoName];
+      var keepPass=(cur && typeof cur==='object' && cur.pass)?cur.pass:EP;
+      m2[autoName]={ email:email, pass:keepPass };
+      setMap(m2);
+      cu={ email:email, role:roleForLogin(email, autoName), empName:autoName };
+      startApp(); return;
+    }
+    recordPending(email, displayName);
+    showPendingScreen(email, displayName);
+  };
+  if(!GAS_ENABLED){ done(); return; }
+  fetch(GAS_URL + '?action=getAll&t=' + Date.now(), { method:'GET', redirect:'follow', cache:'no-cache' })
+    .then(function(res){ return res.json(); })
+    .then(function(json){
+      if(json && json.ok && json.data){
+        DB = json.data; DB_FRESH = true;
+        Object.keys(DB).forEach(function(k){ try { localStorage.setItem(k, JSON.stringify(DB[k])); } catch(e){} });
+        setSyncStatus('synced');
+      }
+      done();
+    })
+    .catch(function(){ done(); });
 }
 
 // ── Pending sign-ins (verified company emails waiting to be linked) ──────────
@@ -3081,7 +3130,7 @@ function linkPending(email, name){
   else { var m=getMap(); m[name]={ email:email, pass:(m[name]&&m[name].pass)?m[name].pass:EP }; setMap(m); }
   clearPending(email);
   audit('SIGNIN_LINKED', name, email);
-  showToast(email+' linked to '+name+' ✓','success');
+  showToast(email+' linked to '+name+' — wait for ✓ Synced before they retry','success');
   renderAccessTable();
 }
 function createFromPending(email, displayName){
@@ -4265,7 +4314,7 @@ function voiceToggle(){
 
 // ── Boot ──────────────────────────────────────────────────────
 window.onload = async function() {
-  var APP_VERSION = '2026.10.05-pending-signin';
+  var APP_VERSION = '2026.10.05-pending-retry';
   var vEl=document.getElementById('app-version'); if(vEl) vEl.textContent=APP_VERSION;
   try { document.title = 'Team Performance Rating'; } catch(e) {}
   init3DBackground();
